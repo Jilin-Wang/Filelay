@@ -156,6 +156,7 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func quitApp() {
+        coordinator.suspendLaunchAtLoginForCurrentSessionIfNeeded()
         NSApp.terminate(nil)
     }
 }

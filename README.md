@@ -33,7 +33,7 @@ Local file -> (file watch) -> iCloud relay -> (distributed to) -> Other Macs
 
 1. On Device A, pick a local file and upload it to iCloud as a relay copy
 2. On Device B, pick the corresponding local file and link it to the iCloud copy
-3. Filelay monitors both sides — local changes sync up, iCloud changes sync down
+3. Filelay monitors both sides — local changes sync up, and cloud changes show up on other linked Macs as a confirmation prompt before local files are updated
 
 **Important:** Files synced on Device A do **not** automatically appear on Device B. Device B must manually select its local file and establish the link. This is intentional — Filelay never creates or overwrites files without your explicit action.
 
@@ -55,6 +55,14 @@ swift run Filelay
 ```
 
 Or open `Package.swift` in Xcode and run the `Filelay` target.
+
+### Build a macOS app bundle
+
+```bash
+./build_app.sh
+```
+
+The packaged app will be generated at `dist/Filelay.app`.
 
 ### Auto-start on login
 
@@ -124,7 +132,7 @@ MIT
 
 1. 在设备 A 上选择一个本地文件，上传到 iCloud 作为中转副本
 2. 在设备 B 上选择对应的本地文件，与 iCloud 中的副本建立关联
-3. Filelay 同时监听两侧，本地变化自动上传，iCloud 变化自动同步到本地
+3. Filelay 同时监听两侧：本地变化自动上传，云端变化会在其他已关联设备上显示为确认提示，只有确认后才会更新本地文件
 
 **重要说明：** 设备 A 同步的文件**不会**自动出现在设备 B。设备 B 必须手动选择本地文件并建立关联，才会开始同步。这是有意为之的设计，Filelay 不会在未经你明确操作的情况下创建或覆盖任何文件。
 
@@ -146,6 +154,14 @@ swift run Filelay
 ```
 
 或在 Xcode 中打开 `Package.swift`，运行 `Filelay` target。
+
+### 打包 macOS App
+
+```bash
+./build_app.sh
+```
+
+打包后的应用会生成在 `dist/Filelay.app`。
 
 ### 开机自启动
 

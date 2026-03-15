@@ -12,6 +12,22 @@ enum AppLanguage: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum FilelayLayout {
+    static let cloudFilesDirectoryName = "CloudFiles"
+    static let metadataDirectoryName = ".filelay"
+    static let legacyMetadataDirectoryName = ".autoicloud"
+
+    static func cloudFilesRootURL(rootPath: String) -> URL {
+        URL(fileURLWithPath: rootPath, isDirectory: true)
+            .appendingPathComponent(cloudFilesDirectoryName, isDirectory: true)
+    }
+
+    static func metadataRootURL(rootPath: String) -> URL {
+        URL(fileURLWithPath: rootPath, isDirectory: true)
+            .appendingPathComponent(metadataDirectoryName, isDirectory: true)
+    }
+}
+
 enum SyncItemStatus: String, Codable, CaseIterable {
     case synced
     case uploading
@@ -73,6 +89,15 @@ enum SyncEventAction: String, Codable, CaseIterable {
     }
 }
 
+enum SyncTargetKind: String, Codable, Hashable, CaseIterable {
+    case file
+    case folder
+
+    var isDirectory: Bool {
+        self == .folder
+    }
+}
+
 struct CloudVersion: Codable, Hashable {
     var versionId: String
     var contentHash: String
@@ -109,6 +134,7 @@ struct ConflictState: Codable, Hashable {
 
 struct SyncItem: Codable, Hashable, Identifiable {
     var id: String
+    var kind: SyncTargetKind
     var localPath: String
     var cloudFilePath: String
     var cloudFileId: String
@@ -130,21 +156,137 @@ struct SyncItem: Codable, Hashable, Identifiable {
         }
         return URL(fileURLWithPath: cloudFilePath).lastPathComponent
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case localPath
+        case cloudFilePath
+        case cloudFileId
+        case isEnabled
+        case status
+        case lastKnownLocalHash
+        case lastSeenCloudVersionId
+        case conflictState
+        case cloudVersion
+        case deviceReceipts
+        case history
+        case lastErrorMessage
+        case createdAt
+    }
+
+    init(
+        id: String,
+        kind: SyncTargetKind,
+        localPath: String,
+        cloudFilePath: String,
+        cloudFileId: String,
+        isEnabled: Bool,
+        status: SyncItemStatus,
+        lastKnownLocalHash: String?,
+        lastSeenCloudVersionId: String?,
+        conflictState: ConflictState?,
+        cloudVersion: CloudVersion?,
+        deviceReceipts: [String: DeviceReceipt],
+        history: [SyncEvent],
+        lastErrorMessage: String?,
+        createdAt: String
+    ) {
+        self.id = id
+        self.kind = kind
+        self.localPath = localPath
+        self.cloudFilePath = cloudFilePath
+        self.cloudFileId = cloudFileId
+        self.isEnabled = isEnabled
+        self.status = status
+        self.lastKnownLocalHash = lastKnownLocalHash
+        self.lastSeenCloudVersionId = lastSeenCloudVersionId
+        self.conflictState = conflictState
+        self.cloudVersion = cloudVersion
+        self.deviceReceipts = deviceReceipts
+        self.history = history
+        self.lastErrorMessage = lastErrorMessage
+        self.createdAt = createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        kind = try container.decodeIfPresent(SyncTargetKind.self, forKey: .kind) ?? .file
+        localPath = try container.decode(String.self, forKey: .localPath)
+        cloudFilePath = try container.decode(String.self, forKey: .cloudFilePath)
+        cloudFileId = try container.decode(String.self, forKey: .cloudFileId)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        status = try container.decode(SyncItemStatus.self, forKey: .status)
+        lastKnownLocalHash = try container.decodeIfPresent(String.self, forKey: .lastKnownLocalHash)
+        lastSeenCloudVersionId = try container.decodeIfPresent(String.self, forKey: .lastSeenCloudVersionId)
+        conflictState = try container.decodeIfPresent(ConflictState.self, forKey: .conflictState)
+        cloudVersion = try container.decodeIfPresent(CloudVersion.self, forKey: .cloudVersion)
+        deviceReceipts = try container.decodeIfPresent([String: DeviceReceipt].self, forKey: .deviceReceipts) ?? [:]
+        history = try container.decodeIfPresent([SyncEvent].self, forKey: .history) ?? []
+        lastErrorMessage = try container.decodeIfPresent(String.self, forKey: .lastErrorMessage)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+    }
 }
 
 struct CloudFileMetadata: Codable, Hashable {
     var cloudFileId: String
+    var kind: SyncTargetKind
     var cloudFilePath: String
     var cloudVersion: CloudVersion?
     var deviceReceipts: [String: DeviceReceipt]
     var eventLog: [SyncEvent]
     var deletedAt: String?
     var deletedByDevice: DeviceInfo?
+
+    private enum CodingKeys: String, CodingKey {
+        case cloudFileId
+        case kind
+        case cloudFilePath
+        case cloudVersion
+        case deviceReceipts
+        case eventLog
+        case deletedAt
+        case deletedByDevice
+    }
+
+    init(
+        cloudFileId: String,
+        kind: SyncTargetKind,
+        cloudFilePath: String,
+        cloudVersion: CloudVersion?,
+        deviceReceipts: [String: DeviceReceipt],
+        eventLog: [SyncEvent],
+        deletedAt: String?,
+        deletedByDevice: DeviceInfo?
+    ) {
+        self.cloudFileId = cloudFileId
+        self.kind = kind
+        self.cloudFilePath = cloudFilePath
+        self.cloudVersion = cloudVersion
+        self.deviceReceipts = deviceReceipts
+        self.eventLog = eventLog
+        self.deletedAt = deletedAt
+        self.deletedByDevice = deletedByDevice
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        cloudFileId = try container.decode(String.self, forKey: .cloudFileId)
+        kind = try container.decodeIfPresent(SyncTargetKind.self, forKey: .kind) ?? .file
+        cloudFilePath = try container.decode(String.self, forKey: .cloudFilePath)
+        cloudVersion = try container.decodeIfPresent(CloudVersion.self, forKey: .cloudVersion)
+        deviceReceipts = try container.decodeIfPresent([String: DeviceReceipt].self, forKey: .deviceReceipts) ?? [:]
+        eventLog = try container.decodeIfPresent([SyncEvent].self, forKey: .eventLog) ?? []
+        deletedAt = try container.decodeIfPresent(String.self, forKey: .deletedAt)
+        deletedByDevice = try container.decodeIfPresent(DeviceInfo.self, forKey: .deletedByDevice)
+    }
 }
 
 struct CloudFileRecord: Hashable, Identifiable {
     var id: String { cloudFileId }
     var cloudFileId: String
+    var kind: SyncTargetKind
     var cloudFilePath: String
     var displayName: String
     var localPath: String?
@@ -172,6 +314,10 @@ struct AppSettings: Codable, Hashable {
             associationHintsEnabled: true,
             language: .zhHans
         )
+    }
+
+    var cloudFilesRootPath: String {
+        FilelayLayout.cloudFilesRootURL(rootPath: managedRootPath).path
     }
 }
 
@@ -212,6 +358,7 @@ struct DiscoveryCandidate: Identifiable, Hashable {
 
     var id: String { cloudFileId }
     var cloudFileId: String
+    var kind: SyncTargetKind
     var cloudFilePath: String
     var fileName: String
     var confidence: Confidence

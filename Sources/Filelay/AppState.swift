@@ -94,7 +94,7 @@ final class AppStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.title = L10n.text(.selectLocalFilePanel, settings.language)
         panel.canChooseFiles = true
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             setLocalFilePathForAdd(url.path)
@@ -116,9 +116,9 @@ final class AppStore: ObservableObject {
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: settings.managedRootPath)
+        panel.directoryURL = URL(fileURLWithPath: settings.cloudFilesRootPath)
         if panel.runModal() == .OK, let url = panel.url {
-            let rootURL = URL(fileURLWithPath: settings.managedRootPath)
+            let rootURL = URL(fileURLWithPath: settings.cloudFilesRootPath)
             guard url.path.hasPrefix(rootURL.path) else {
                 alertMessage = AlertMessage(
                     title: L10n.text(.invalidDirectory, settings.language),

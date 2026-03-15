@@ -3,7 +3,6 @@ import Foundation
 final class Storage {
     private enum Legacy {
         static let appSupportDirectoryName = "AutoiCloud"
-        static let sidecarDirectoryName = ".autoicloud"
         static let legacyDefaultsDeviceIDKey = "autoiCloud.deviceId"
     }
 
@@ -92,6 +91,10 @@ final class Storage {
 
     var defaultManagedRootURL: URL {
         iCloudDriveRootURL.appendingPathComponent("Filelay", isDirectory: true)
+    }
+
+    var legacyManagedRootURL: URL {
+        iCloudDriveRootURL.appendingPathComponent(Legacy.appSupportDirectoryName, isDirectory: true)
     }
 
     var logsDirectoryURL: URL {
@@ -184,16 +187,29 @@ final class Storage {
     func ensureManagedRoot(path: String) -> URL {
         let rootURL = URL(fileURLWithPath: path)
         try? fm.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try? fm.createDirectory(at: FilelayLayout.cloudFilesRootURL(rootPath: path), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: FilelayLayout.metadataRootURL(rootPath: path), withIntermediateDirectories: true)
         return rootURL
     }
 
+    func cloudFilesRootURL(rootPath: String) -> URL {
+        let rootURL = ensureManagedRoot(path: rootPath)
+        let cloudFilesURL = rootURL.appendingPathComponent(FilelayLayout.cloudFilesDirectoryName, isDirectory: true)
+        try? fm.createDirectory(at: cloudFilesURL, withIntermediateDirectories: true)
+        return cloudFilesURL
+    }
+
     func metadataURL(for cloudFileURL: URL, cloudFileId: String) -> URL {
-        let sidecarDir = cloudFileURL.deletingLastPathComponent().appendingPathComponent(".filelay", isDirectory: true)
+        if let managedRootURL = managedRootURL(for: cloudFileURL) {
+            let metadataDir = managedRootURL.appendingPathComponent(FilelayLayout.metadataDirectoryName, isDirectory: true)
+            return metadataDir.appendingPathComponent("\(cloudFileId).json")
+        }
+        let sidecarDir = cloudFileURL.deletingLastPathComponent().appendingPathComponent(FilelayLayout.metadataDirectoryName, isDirectory: true)
         return sidecarDir.appendingPathComponent("\(cloudFileId).json")
     }
 
     func legacySidecarMetadataURL(for cloudFileURL: URL, cloudFileId: String) -> URL {
-        let sidecarDir = cloudFileURL.deletingLastPathComponent().appendingPathComponent(Legacy.sidecarDirectoryName, isDirectory: true)
+        let sidecarDir = cloudFileURL.deletingLastPathComponent().appendingPathComponent(FilelayLayout.legacyMetadataDirectoryName, isDirectory: true)
         return sidecarDir.appendingPathComponent("\(cloudFileId).json")
     }
 
@@ -220,6 +236,7 @@ final class Storage {
            let decoded = try? JSONDecoder().decode(LegacySyncMetadata.self, from: data) {
             let migrated = CloudFileMetadata(
                 cloudFileId: decoded.fileId.isEmpty ? cloudFileId : decoded.fileId,
+                kind: inferredTargetKind(for: cloudFileURL),
                 cloudFilePath: cloudFileURL.path,
                 cloudVersion: decoded.cloudVersion.map {
                     CloudVersion(
@@ -252,6 +269,7 @@ final class Storage {
 
         let empty = CloudFileMetadata(
             cloudFileId: cloudFileId,
+            kind: inferredTargetKind(for: cloudFileURL),
             cloudFilePath: cloudFileURL.path,
             cloudVersion: nil,
             deviceReceipts: [:],
@@ -277,7 +295,7 @@ final class Storage {
         try encoded.writeAtomically(to: destinationURL)
     }
 
-    func replaceFileAtomically(at destinationURL: URL, withContentsOf sourceURL: URL) throws {
+    func replaceItemAtomically(at destinationURL: URL, withContentsOf sourceURL: URL) throws {
         try fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let tempURL = destinationURL
             .deletingLastPathComponent()
@@ -293,34 +311,70 @@ final class Storage {
         }
     }
 
+    func replaceFileAtomically(at destinationURL: URL, withContentsOf sourceURL: URL) throws {
+        try replaceItemAtomically(at: destinationURL, withContentsOf: sourceURL)
+    }
+
+    func replaceDirectoryContents(at destinationURL: URL, withContentsOf sourceURL: URL) throws {
+        try fm.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+
+        let sourceEntries = Set((try? fm.contentsOfDirectory(atPath: sourceURL.path)) ?? [])
+        let destinationEntries = Set((try? fm.contentsOfDirectory(atPath: destinationURL.path)) ?? [])
+
+        for staleEntry in destinationEntries.subtracting(sourceEntries) {
+            let staleURL = destinationURL.appendingPathComponent(staleEntry)
+            try? fm.removeItem(at: staleURL)
+        }
+
+        for entry in sourceEntries {
+            let sourceChildURL = sourceURL.appendingPathComponent(entry)
+            let destinationChildURL = destinationURL.appendingPathComponent(entry)
+            var isDirectory = ObjCBool(false)
+            guard fm.fileExists(atPath: sourceChildURL.path, isDirectory: &isDirectory) else { continue }
+
+            if isDirectory.boolValue {
+                try replaceDirectoryContents(at: destinationChildURL, withContentsOf: sourceChildURL)
+            } else {
+                try replaceItemAtomically(at: destinationChildURL, withContentsOf: sourceChildURL)
+            }
+        }
+    }
+
     func discoverManagedMetadata(rootPath: String) -> [DiscoveredCloudMetadata] {
         let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
         guard fm.fileExists(atPath: rootURL.path) else { return [] }
 
-        guard let enumerator = fm.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsPackageDescendants],
-            errorHandler: nil
-        ) else {
-            return []
-        }
-
         var discovered: [DiscoveredCloudMetadata] = []
-        for case let url as URL in enumerator {
-            guard url.pathExtension == "json" else { continue }
-            guard url.pathComponents.contains(".filelay") || url.pathComponents.contains(Legacy.sidecarDirectoryName) else { continue }
-            guard let data = try? Data(contentsOf: url),
-                  let metadata = try? JSONDecoder().decode(CloudFileMetadata.self, from: data) else {
+
+        let candidateDirectories = [
+            rootURL.appendingPathComponent(FilelayLayout.metadataDirectoryName, isDirectory: true),
+            rootURL.appendingPathComponent(FilelayLayout.legacyMetadataDirectoryName, isDirectory: true)
+        ]
+
+        for directory in candidateDirectories where fm.fileExists(atPath: directory.path) {
+            guard let enumerator = fm.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsPackageDescendants],
+                errorHandler: nil
+            ) else {
                 continue
             }
-            let normalized = normalizeMetadata(metadata)
-            let destinationURL = metadataURL(for: URL(fileURLWithPath: normalized.cloudFilePath), cloudFileId: normalized.cloudFileId)
-            if normalized != metadata || destinationURL != url,
-               let encoded = try? JSONEncoder.pretty.encode(normalized) {
-                try? encoded.writeAtomically(to: destinationURL)
+
+            for case let url as URL in enumerator {
+                guard url.pathExtension == "json" else { continue }
+                guard let data = try? Data(contentsOf: url),
+                      let metadata = try? JSONDecoder().decode(CloudFileMetadata.self, from: data) else {
+                    continue
+                }
+                let normalized = normalizeMetadata(metadata)
+                let destinationURL = metadataURL(for: URL(fileURLWithPath: normalized.cloudFilePath), cloudFileId: normalized.cloudFileId)
+                if normalized != metadata || destinationURL != url,
+                   let encoded = try? JSONEncoder.pretty.encode(normalized) {
+                    try? encoded.writeAtomically(to: destinationURL)
+                }
+                discovered.append(DiscoveredCloudMetadata(metadata: normalized, metadataURL: destinationURL))
             }
-            discovered.append(DiscoveredCloudMetadata(metadata: normalized, metadataURL: destinationURL))
         }
 
         return discovered.sorted { lhs, rhs in
@@ -328,6 +382,51 @@ final class Storage {
             let rightDate = rhs.metadata.cloudVersion?.updatedAt ?? ""
             return leftDate > rightDate
         }
+    }
+
+    func migrateManagedRootIfNeeded(settings: AppSettings, items: [SyncItem]) -> (settings: AppSettings, items: [SyncItem], didMigrate: Bool) {
+        let legacyRoot = legacyManagedRootURL.standardizedFileURL.path
+        let currentRoot = URL(fileURLWithPath: settings.managedRootPath).standardizedFileURL.path
+        let newRoot = defaultManagedRootURL.standardizedFileURL.path
+
+        guard currentRoot == legacyRoot else {
+            return (settings, items, false)
+        }
+
+        var updatedSettings = settings
+        updatedSettings.managedRootPath = newRoot
+        _ = ensureManagedRoot(path: newRoot)
+
+        let legacyRootURL = URL(fileURLWithPath: legacyRoot, isDirectory: true)
+        let newCloudFilesRootURL = cloudFilesRootURL(rootPath: newRoot)
+        var updatedItems = items
+
+        for index in updatedItems.indices {
+            let oldCloudURL = URL(fileURLWithPath: updatedItems[index].cloudFilePath)
+            guard oldCloudURL.path.hasPrefix(legacyRootURL.path + "/") || oldCloudURL.path == legacyRootURL.path else {
+                continue
+            }
+
+            let relativePath = String(oldCloudURL.path.dropFirst(legacyRootURL.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !relativePath.isEmpty else { continue }
+
+            let newCloudURL = newCloudFilesRootURL.appendingPathComponent(relativePath)
+            try? fm.createDirectory(at: newCloudURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+            if fm.fileExists(atPath: oldCloudURL.path), !fm.fileExists(atPath: newCloudURL.path) {
+                try? fm.moveItem(at: oldCloudURL, to: newCloudURL)
+            }
+
+            var metadata = loadMetadata(for: oldCloudURL, cloudFileId: updatedItems[index].cloudFileId).metadata
+            metadata.cloudFilePath = newCloudURL.path
+            try? saveMetadata(metadata, for: newCloudURL)
+
+            updatedItems[index].cloudFilePath = newCloudURL.path
+        }
+
+        saveSettings(updatedSettings)
+        saveSyncItems(updatedItems)
+        return (updatedSettings, updatedItems, true)
     }
 
     private func merge(existing: CloudFileMetadata, incoming: CloudFileMetadata) -> CloudFileMetadata {
@@ -369,6 +468,17 @@ final class Storage {
     private func saveCurrentDevice(_ device: DeviceInfo) {
         guard let data = try? JSONEncoder.pretty.encode(device) else { return }
         try? data.writeAtomically(to: deviceIdentityURL)
+    }
+
+    private func managedRootURL(for cloudFileURL: URL) -> URL? {
+        let standardizedPath = cloudFileURL.standardizedFileURL.path
+        let marker = "/\(FilelayLayout.cloudFilesDirectoryName)/"
+        guard let markerRange = standardizedPath.range(of: marker) else {
+            return nil
+        }
+        let rootPath = String(standardizedPath[..<markerRange.lowerBound])
+        guard !rootPath.isEmpty else { return nil }
+        return URL(fileURLWithPath: rootPath, isDirectory: true)
     }
 
     private func migrateLegacyAppSupportIfNeeded() {
@@ -580,6 +690,7 @@ final class Storage {
 
         let item = SyncItem(
             id: UUID().uuidString,
+            kind: inferredTargetKind(for: cloudURL),
             localPath: localPath,
             cloudFilePath: cloudPath,
             cloudFileId: legacyFileId,
@@ -598,6 +709,14 @@ final class Storage {
         let normalized = normalizeSyncItem(item)
         saveSyncItems([normalized])
         return [normalized]
+    }
+
+    private func inferredTargetKind(for url: URL) -> SyncTargetKind {
+        var isDirectory = ObjCBool(false)
+        if fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return .folder
+        }
+        return .file
     }
 }
 

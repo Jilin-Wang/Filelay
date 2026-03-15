@@ -7,7 +7,7 @@ Usage:
   ./install_menu_app_autostart.sh --app "/Applications/Filelay.app" [--label com.filelay.menubar]
 
 Description:
-  Register a macOS LaunchAgent for the menu bar app so it starts at login and keeps running.
+  Register a macOS LaunchAgent for the menu bar app so it starts at login.
 USAGE
 }
 
@@ -72,9 +72,6 @@ cat > "$PLIST_PATH" <<PLIST
   <key>RunAtLoad</key>
   <true/>
 
-  <key>KeepAlive</key>
-  <true/>
-
   <key>ProcessType</key>
   <string>Background</string>
 </dict>
@@ -84,7 +81,6 @@ PLIST
 launchctl bootout "gui/$UID" "$PLIST_PATH" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$UID" "$PLIST_PATH"
 launchctl enable "gui/$UID/$LABEL"
-launchctl kickstart -k "gui/$UID/$LABEL"
 
 echo "Installed login item: $LABEL"
 echo "Plist: $PLIST_PATH"

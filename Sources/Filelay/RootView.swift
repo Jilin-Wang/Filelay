@@ -1,6 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum AppChromeColor {
+    static let windowBackground = Color(nsColor: .windowBackgroundColor)
+    static let sidebarBackground = Color(nsColor: .underPageBackgroundColor)
+    static let panelBackground = Color(nsColor: .controlBackgroundColor)
+    static let cardBackground = Color(nsColor: .textBackgroundColor)
+    static let subtleFill = Color.primary.opacity(0.035)
+    static let subtleFillStrong = Color.primary.opacity(0.055)
+    static let border = Color.primary.opacity(0.08)
+    static let borderStrong = Color.primary.opacity(0.14)
+    static let shadow = Color.black.opacity(0.12)
+}
+
 struct AppRootView: View {
     @ObservedObject var store: AppStore
 
@@ -10,7 +22,7 @@ struct AppRootView: View {
         HStack(spacing: 0) {
             SidebarView(store: store, language: language)
                 .frame(width: 192)
-                .background(Color.white)
+                .background(AppChromeColor.sidebarBackground)
             Divider()
             Group {
                 switch store.selectedSection {
@@ -27,6 +39,7 @@ struct AppRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 1120, minHeight: 720)
+        .background(AppChromeColor.windowBackground)
         .navigationTitle(L10n.text(.appName, language))
         .sheet(isPresented: $store.isAddSheetPresented) {
             AddFileSheet(store: store, language: language)
@@ -117,7 +130,7 @@ private struct SidebarView: View {
             .padding(18)
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(Color.white)
+        .background(AppChromeColor.sidebarBackground)
     }
 
     private func badgeCount(for section: AppSection) -> Int {
@@ -155,45 +168,36 @@ private struct SidebarItemButton: View {
     let action: () -> Void
 
     @State private var isHovering = false
-    @State private var didTriggerCurrentPress = false
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .medium))
-                .frame(width: 18)
-            Text(title)
-                .font(.subheadline)
-                .fontWeight(isSelected ? .semibold : .regular)
-            Spacer()
-            if badgeCount > 0 {
-                Text("\(badgeCount)")
-                    .font(.caption2)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(isSelected ? Color.accentColor.opacity(0.12) : Color.black.opacity(0.05))
-                    .clipShape(Capsule())
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 18)
+                Text(title)
+                    .font(.subheadline)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                Spacer()
+                if badgeCount > 0 {
+                    Text("\(badgeCount)")
+                        .font(.caption2)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(isSelected ? Color.accentColor.opacity(0.12) : AppChromeColor.subtleFillStrong)
+                        .clipShape(Capsule())
+                }
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(backgroundColor)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+            .contentShape(RoundedRectangle(cornerRadius: 12))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(backgroundColor)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
-        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .buttonStyle(.plain)
         .onHover { isHovering = $0 }
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in
-                    guard !didTriggerCurrentPress else { return }
-                    didTriggerCurrentPress = true
-                    action()
-                }
-                .onEnded { _ in
-                    didTriggerCurrentPress = false
-                }
-        )
     }
 
     private var backgroundColor: Color {
@@ -201,7 +205,7 @@ private struct SidebarItemButton: View {
             return Color.accentColor.opacity(0.1)
         }
         if isHovering {
-            return Color.black.opacity(0.045)
+            return AppChromeColor.subtleFillStrong
         }
         return Color.clear
     }
@@ -419,10 +423,10 @@ private struct CloudFileListPane: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.white)
+        .background(AppChromeColor.panelBackground)
         .overlay(
             RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                .stroke(AppChromeColor.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .padding(.trailing, 16)
@@ -441,6 +445,9 @@ private struct CloudFileRowView: View {
     var body: some View {
         Button(action: action) {
             HStack(alignment: .top, spacing: 12) {
+                Image(systemName: file.kind == .folder ? "folder.fill" : "doc.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 4) {
                     highlightedText(file.displayName, query: searchQuery, font: .headline)
                         .lineLimit(1)
@@ -490,9 +497,9 @@ private struct CloudFileRowView: View {
             return Color.accentColor.opacity(0.08)
         }
         if isHovering {
-            return Color.black.opacity(0.03)
+            return AppChromeColor.subtleFill
         }
-        return Color.white
+        return AppChromeColor.cardBackground
     }
 
     private var rowBorderColor: Color {
@@ -500,9 +507,9 @@ private struct CloudFileRowView: View {
             return Color.accentColor.opacity(0.45)
         }
         if isHovering {
-            return Color.black.opacity(0.12)
+            return AppChromeColor.borderStrong
         }
-        return Color.black.opacity(0.06)
+        return AppChromeColor.border
     }
 }
 
@@ -532,9 +539,14 @@ private struct CloudFileDetailPanel: View {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(file.displayName)
-                                .font(.title2)
-                                .fontWeight(.semibold)
+                            Label {
+                                Text(file.displayName)
+                                    .font(.title2)
+                                    .fontWeight(.semibold)
+                            } icon: {
+                                Image(systemName: file.kind == .folder ? "folder.fill" : "doc.fill")
+                                    .foregroundStyle(Color.accentColor)
+                            }
                         }
                         Spacer()
                         HStack(spacing: 10) {
@@ -654,7 +666,7 @@ private struct CloudFileDetailPanel: View {
                                     }
                                     .padding(12)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color.black.opacity(0.025))
+                                    .background(AppChromeColor.subtleFill)
                                     .clipShape(RoundedRectangle(cornerRadius: 12))
                                 }
                             }
@@ -688,7 +700,7 @@ private struct CloudFileDetailPanel: View {
                                     }
                                     .padding(12)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color.black.opacity(0.025))
+                                    .background(AppChromeColor.subtleFill)
                                     .clipShape(RoundedRectangle(cornerRadius: 12))
                                 }
                             }
@@ -699,7 +711,7 @@ private struct CloudFileDetailPanel: View {
                 .padding(.bottom, 20)
             }
         }
-        .background(Color.white)
+        .background(AppChromeColor.windowBackground)
     }
 }
 
@@ -748,10 +760,10 @@ private struct SectionCard<Content: View>: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white)
+        .background(AppChromeColor.cardBackground)
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                .stroke(AppChromeColor.border, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
@@ -1001,7 +1013,7 @@ private struct AddFileSheet: View {
                 if store.addDraft.mode == .upload {
                     SectionCard(title: L10n.text(.uploadSettings, language)) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("\(L10n.text(.cloudRoot, language))：\(store.settings.managedRootPath)")
+                            Text("\(L10n.text(.cloudRoot, language))：\(store.settings.cloudFilesRootPath)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             TextField(L10n.text(.subfolderOptional, language), text: Binding(
@@ -1101,10 +1113,10 @@ private struct LocalFileDropZone: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, compact ? 18 : 28)
-            .background(isTargeted ? Color.accentColor.opacity(0.08) : Color.black.opacity(0.025))
+            .background(isTargeted ? Color.accentColor.opacity(0.08) : AppChromeColor.subtleFill)
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(isTargeted ? Color.accentColor : Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1.5, dash: [6]))
+                    .strokeBorder(isTargeted ? Color.accentColor : AppChromeColor.borderStrong, style: StrokeStyle(lineWidth: 1.5, dash: [6]))
             )
             .clipShape(RoundedRectangle(cornerRadius: 14))
         }
@@ -1119,8 +1131,7 @@ private struct LocalFileDropZone: View {
 
         provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
             guard let url = extractFileURL(from: item) else { return }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+            guard FileManager.default.fileExists(atPath: url.path) else {
                 return
             }
             DispatchQueue.main.async {
@@ -1152,6 +1163,8 @@ private struct DiscoveryHintRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
+            Image(systemName: candidate.kind == .folder ? "folder.fill" : "doc.fill")
+                .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 4) {
                 Text(candidate.fileName)
                     .fontWeight(.medium)
@@ -1171,7 +1184,7 @@ private struct DiscoveryHintRow: View {
                 .controlSize(.small)
         }
         .padding(12)
-        .background(Color.black.opacity(0.025))
+        .background(AppChromeColor.subtleFill)
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
@@ -1183,8 +1196,13 @@ private struct DiscoveryTargetRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(target.fileName)
-                    .fontWeight(.medium)
+                Label {
+                    Text(target.fileName)
+                        .fontWeight(.medium)
+                } icon: {
+                    Image(systemName: target.kind == .folder ? "folder.fill" : "doc.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
                 Spacer()
                 if isSelected {
                     Image(systemName: "checkmark.circle.fill")
@@ -1212,18 +1230,26 @@ private struct SelectedLocalFileCard: View {
         URL(fileURLWithPath: path)
     }
 
+    private var targetKind: SyncTargetKind {
+        var isDirectory = ObjCBool(false)
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return .folder
+        }
+        return .file
+    }
+
     private var backgroundColor: Color {
-        isHovering ? Color.accentColor.opacity(0.08) : Color.black.opacity(0.03)
+        isHovering ? Color.accentColor.opacity(0.08) : AppChromeColor.subtleFill
     }
 
     private var borderColor: Color {
-        isHovering ? Color.accentColor.opacity(0.65) : Color.black.opacity(0.12)
+        isHovering ? Color.accentColor.opacity(0.65) : AppChromeColor.borderStrong
     }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Image(systemName: "doc.fill")
+                Image(systemName: targetKind == .folder ? "folder.fill" : "doc.fill")
                     .font(.system(size: 18))
                     .foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading, spacing: 6) {
@@ -1249,7 +1275,7 @@ private struct SelectedLocalFileCard: View {
                     .stroke(borderColor, lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 14))
-            .shadow(color: isHovering ? Color.black.opacity(0.08) : .clear, radius: 10, y: 4)
+            .shadow(color: isHovering ? AppChromeColor.shadow : .clear, radius: 10, y: 4)
         }
         .buttonStyle(.plain)
         .onHover { isHovering = $0 }

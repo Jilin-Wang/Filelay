@@ -1,7 +1,9 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 final class SyncCoordinator {
+    private static let launchAgentLabel = "com.filelay.menubar"
     private let storage: Storage
     private var settings: AppSettings
     private var items: [SyncItem]
@@ -18,12 +20,15 @@ final class SyncCoordinator {
     init(storage: Storage) {
         self.storage = storage
         self.currentDevice = storage.currentDevice()
-        self.settings = storage.loadSettings()
+        let loadedSettings = storage.loadSettings()
         self.logger = StructuredLogger(logsDirectoryURL: storage.logsDirectoryURL)
         let loadedItems = storage.loadSyncItems()
-        self.items = loadedItems
-        self.items = loadedItems.map(canonicalize(item:))
-        if self.items != loadedItems {
+        let migrated = storage.migrateManagedRootIfNeeded(settings: loadedSettings, items: loadedItems)
+        self.settings = migrated.settings
+        self.items = migrated.items
+        self.items = self.items.map(canonicalize(item:))
+        if migrated.didMigrate || self.items != loadedItems {
+            storage.saveSettings(self.settings)
             storage.saveSyncItems(self.items)
         }
     }
@@ -127,6 +132,28 @@ final class SyncCoordinator {
         return runProcess(executableURL: scriptURL, arguments: [])
     }
 
+    func suspendLaunchAtLoginForCurrentSessionIfNeeded() {
+        queue.sync {
+            guard settings.launchAtLoginEnabled else { return }
+
+            let plistPath = launchAgentPlistPath()
+            guard FileManager.default.fileExists(atPath: plistPath) else { return }
+
+            let launchctlURL = URL(fileURLWithPath: "/bin/launchctl")
+            let arguments = ["bootout", "gui/\(getuid())", plistPath]
+
+            if let message = runProcess(executableURL: launchctlURL, arguments: arguments) {
+                log(.warning, category: "launch_at_login.bootout_failed", message: message, metadata: [
+                    "plistPath": plistPath
+                ])
+            } else {
+                log(.info, category: "launch_at_login.bootout", message: "Suspended launch agent for current session", metadata: [
+                    "plistPath": plistPath
+                ])
+            }
+        }
+    }
+
     private func resetTimerLocked() {
         timer?.cancel()
         timer = nil
@@ -141,7 +168,7 @@ final class SyncCoordinator {
     }
 
     private var pollingIntervalSeconds: Int {
-        max(settings.syncIntervalSeconds, 30)
+        max(settings.syncIntervalSeconds, 5)
     }
 
     private func scheduleWatchDrivenSyncLocked() {
@@ -196,8 +223,13 @@ final class SyncCoordinator {
             insertTarget(path: cloudURL.deletingLastPathComponent().path, kind: .directory)
             insertTarget(path: metadataURL.deletingLastPathComponent().path, kind: .directory)
 
-            insertTarget(path: localURL.path, kind: .file)
-            insertTarget(path: cloudURL.path, kind: .file)
+            if item.kind == .folder {
+                insertTarget(path: localURL.path, kind: .directory)
+                insertTarget(path: cloudURL.path, kind: .directory)
+            } else {
+                insertTarget(path: localURL.path, kind: .file)
+                insertTarget(path: cloudURL.path, kind: .file)
+            }
             insertTarget(path: metadataURL.path, kind: .file)
         }
 
@@ -217,6 +249,7 @@ final class SyncCoordinator {
             return discovered.map { discovered in
                 DiscoveryCandidate(
                     cloudFileId: discovered.metadata.cloudFileId,
+                    kind: discovered.metadata.kind,
                     cloudFilePath: discovered.metadata.cloudFilePath,
                     fileName: URL(fileURLWithPath: discovered.metadata.cloudFilePath).lastPathComponent,
                     confidence: .discovered,
@@ -233,6 +266,7 @@ final class SyncCoordinator {
             guard !localPath.isEmpty else { return [] }
             let localURL = URL(fileURLWithPath: localPath)
             guard FileManager.default.fileExists(atPath: localURL.path) else { return [] }
+            let localKind = targetKind(for: localURL)
 
             let discovered = storage
                 .discoverManagedMetadata(rootPath: settings.managedRootPath)
@@ -241,7 +275,7 @@ final class SyncCoordinator {
                     discovered.metadata = canonicalize(metadata: discovered.metadata)
                     return discovered
                 }
-                .filter { $0.metadata.deletedAt == nil }
+                .filter { $0.metadata.deletedAt == nil && $0.metadata.kind == localKind }
             guard !discovered.isEmpty else { return [] }
 
             let localHash = fileHash(url: localURL)
@@ -251,6 +285,7 @@ final class SyncCoordinator {
                     .map { discovered in
                         DiscoveryCandidate(
                             cloudFileId: discovered.metadata.cloudFileId,
+                            kind: discovered.metadata.kind,
                             cloudFilePath: discovered.metadata.cloudFilePath,
                             fileName: URL(fileURLWithPath: discovered.metadata.cloudFilePath).lastPathComponent,
                             confidence: .exactHash,
@@ -270,6 +305,7 @@ final class SyncCoordinator {
                 return [
                     DiscoveryCandidate(
                         cloudFileId: match.metadata.cloudFileId,
+                        kind: match.metadata.kind,
                         cloudFilePath: match.metadata.cloudFilePath,
                         fileName: URL(fileURLWithPath: match.metadata.cloudFilePath).lastPathComponent,
                         confidence: .uniqueName,
@@ -288,8 +324,9 @@ final class SyncCoordinator {
             guard FileManager.default.fileExists(atPath: localURL.path) else {
                 throw CoordinatorError.invalidLocalFile
             }
+            let targetKind = targetKind(for: localURL)
 
-            let rootURL = storage.ensureManagedRoot(path: settings.managedRootPath)
+            let rootURL = storage.cloudFilesRootURL(rootPath: settings.managedRootPath)
             let sanitizedFolder = sanitizeRelativeFolder(relativeFolder)
             let targetDirectory = sanitizedFolder.isEmpty
                 ? rootURL
@@ -314,6 +351,7 @@ final class SyncCoordinator {
             let event = makeEvent(action: .added, versionId: nil, note: "通过上传模式添加")
             let item = SyncItem(
                 id: UUID().uuidString,
+                kind: targetKind,
                 localPath: localURL.path,
                 cloudFilePath: cloudURL.path,
                 cloudFileId: UUID().uuidString,
@@ -344,6 +382,7 @@ final class SyncCoordinator {
             guard FileManager.default.fileExists(atPath: localURL.path) else {
                 throw CoordinatorError.invalidLocalFile
             }
+            let targetKind = targetKind(for: localURL)
             guard !items.contains(where: { $0.localPath == localURL.path }) else {
                 throw CoordinatorError.localFileAlreadyManaged
             }
@@ -358,6 +397,9 @@ final class SyncCoordinator {
                 .first(where: { $0.metadata.cloudFileId == cloudFileId })
             guard let discovered else {
                 throw CoordinatorError.cloudMetadataNotFound
+            }
+            guard discovered.metadata.kind == targetKind else {
+                throw CoordinatorError.targetTypeMismatch
             }
 
             guard !items.contains(where: { $0.cloudFilePath == discovered.metadata.cloudFilePath }) else {
@@ -376,6 +418,7 @@ final class SyncCoordinator {
 
             var item = SyncItem(
                 id: UUID().uuidString,
+                kind: targetKind,
                 localPath: localURL.path,
                 cloudFilePath: cloudURL.path,
                 cloudFileId: metadata.cloudFileId,
@@ -392,7 +435,7 @@ final class SyncCoordinator {
             )
 
                 if let localHash, let cloudHash, localHash == cloudHash {
-                    updateReceipt(metadata: &metadata, versionId: metadata.cloudVersion?.versionId ?? makeVersionId(hash: localHash), localURL: localURL, status: .synced)
+                    updateReceipt(metadata: &metadata, versionId: metadata.cloudVersion?.versionId ?? makeVersionId(previous: nil), localURL: localURL, status: .synced)
                     try storage.saveMetadata(metadata, for: cloudURL)
                 item.deviceReceipts = metadata.deviceReceipts
                 item.history = metadata.eventLog
@@ -549,6 +592,7 @@ final class SyncCoordinator {
             try validate(localURL: localURL, cloudURL: cloudURL)
             let loadedMetadata = storage.loadMetadata(for: cloudURL, cloudFileId: item.cloudFileId)
             var metadata = canonicalize(metadata: loadedMetadata.metadata)
+            metadata.kind = item.kind
             if metadata.deletedAt != nil {
                 log(.info, category: "item.deleted_remote", message: "Observed remote deletion and removed local link", item: item)
                 items.remove(at: index)
@@ -589,7 +633,7 @@ final class SyncCoordinator {
 
             if metadata.cloudVersion == nil {
                 metadata.cloudVersion = CloudVersion(
-                    versionId: makeVersionId(hash: cloudHash),
+                    versionId: makeVersionId(previous: metadata.cloudVersion?.versionId),
                     contentHash: cloudHash,
                     updatedAt: Date().filelayString,
                     updatedByDevice: currentDevice,
@@ -620,16 +664,19 @@ final class SyncCoordinator {
             let hasNoBaseline = item.lastKnownLocalHash == nil && item.lastSeenCloudVersionId == nil
 
             let decision: SyncDecision
+            let conflictNote: String
             if hasNoBaseline {
                 decision = .conflict
-            } else if cloudNewForDevice && localChanged {
-                decision = .conflict
+                conflictNote = "首次同步需要手动确认"
             } else if cloudNewForDevice {
-                decision = .pullCloudToLocal
+                decision = .conflict
+                conflictNote = localChanged ? "检测到本地与云端都已更新，等待手动确认" : "检测到云端新版本，等待本地确认"
             } else if localChanged {
                 decision = .pushLocalToCloud
+                conflictNote = ""
             } else {
-                decision = fallbackDecision(localURL: localURL, cloudURL: cloudURL)
+                decision = .conflict
+                conflictNote = "检测到本地与云端状态不一致，等待手动确认"
             }
 
             switch decision {
@@ -654,11 +701,11 @@ final class SyncCoordinator {
                 )
                 metadata.eventLog = mergeEvents(
                     current: metadata.eventLog,
-                    newEvent: makeEvent(action: .conflictDetected, versionId: metadata.cloudVersion?.versionId, note: "检测到双端内容冲突")
+                    newEvent: makeEvent(action: .conflictDetected, versionId: metadata.cloudVersion?.versionId, note: conflictNote)
                 )
                 try storage.saveMetadata(metadata, for: cloudURL)
                 item.history = metadata.eventLog
-                log(.warning, category: "sync.conflict", message: "Detected conflict between local and cloud content", item: item, trigger: trigger)
+                log(.warning, category: "sync.conflict", message: conflictNote, item: item, trigger: trigger)
             }
 
             item.cloudVersion = metadata.cloudVersion
@@ -680,13 +727,18 @@ final class SyncCoordinator {
     }
 
     private func push(item: inout SyncItem, metadata: inout CloudFileMetadata, localURL: URL, cloudURL: URL, note: String) throws {
-        try storage.replaceFileAtomically(at: cloudURL, withContentsOf: localURL)
+        if item.kind == .folder {
+            try storage.replaceDirectoryContents(at: cloudURL, withContentsOf: localURL)
+        } else {
+            try storage.replaceFileAtomically(at: cloudURL, withContentsOf: localURL)
+        }
 
         guard let hash = fileHash(url: localURL) else {
             throw CoordinatorError.hashFailed
         }
 
-        let versionId = makeVersionId(hash: hash)
+        let versionId = makeVersionId(previous: metadata.cloudVersion?.versionId)
+        metadata.kind = item.kind
         metadata.deletedAt = nil
         metadata.deletedByDevice = nil
         metadata.cloudVersion = CloudVersion(
@@ -717,15 +769,20 @@ final class SyncCoordinator {
     }
 
     private func pull(item: inout SyncItem, metadata: inout CloudFileMetadata, localURL: URL, cloudURL: URL, note: String) throws {
-        try storage.replaceFileAtomically(at: localURL, withContentsOf: cloudURL)
+        if item.kind == .folder {
+            try storage.replaceDirectoryContents(at: localURL, withContentsOf: cloudURL)
+        } else {
+            try storage.replaceFileAtomically(at: localURL, withContentsOf: cloudURL)
+        }
 
         guard let localHash = fileHash(url: localURL) else {
             throw CoordinatorError.hashFailed
         }
 
+        metadata.kind = item.kind
         if metadata.cloudVersion == nil {
             metadata.cloudVersion = CloudVersion(
-                versionId: makeVersionId(hash: localHash),
+                versionId: makeVersionId(previous: metadata.cloudVersion?.versionId),
                 contentHash: localHash,
                 updatedAt: Date().filelayString,
                 updatedByDevice: currentDevice,
@@ -733,7 +790,7 @@ final class SyncCoordinator {
             )
         }
 
-        let versionId = metadata.cloudVersion?.versionId ?? makeVersionId(hash: localHash)
+        let versionId = metadata.cloudVersion?.versionId ?? makeVersionId(previous: nil)
         metadata.deletedAt = nil
         metadata.deletedByDevice = nil
         updateReceipt(metadata: &metadata, versionId: versionId, localURL: localURL, status: .synced)
@@ -782,17 +839,6 @@ final class SyncCoordinator {
         if !FileManager.default.fileExists(atPath: cloudDir.path, isDirectory: &isDir) || !isDir.boolValue {
             try FileManager.default.createDirectory(at: cloudDir, withIntermediateDirectories: true)
         }
-    }
-
-    private func fallbackDecision(localURL: URL, cloudURL: URL) -> SyncDecision {
-        guard let localDate = fileMtime(url: localURL),
-              let cloudDate = fileMtime(url: cloudURL) else {
-            return .none
-        }
-        if localDate == cloudDate {
-            return .none
-        }
-        return localDate > cloudDate ? .pushLocalToCloud : .pullCloudToLocal
     }
 
     private func makeConflictState(localURL: URL, cloudURL: URL, localHash: String, cloudHash: String, cloudVersionId: String?) -> ConflictState {
@@ -916,6 +962,7 @@ final class SyncCoordinator {
             guard metadata.deletedAt == nil else { continue }
             records[metadata.cloudFileId] = CloudFileRecord(
                 cloudFileId: metadata.cloudFileId,
+                kind: metadata.kind,
                 cloudFilePath: metadata.cloudFilePath,
                 displayName: URL(fileURLWithPath: metadata.cloudFilePath).lastPathComponent,
                 localPath: nil,
@@ -933,6 +980,7 @@ final class SyncCoordinator {
             let item = canonicalize(item: item)
             records[item.cloudFileId] = CloudFileRecord(
                 cloudFileId: item.cloudFileId,
+                kind: item.kind,
                 cloudFilePath: item.cloudFilePath,
                 displayName: item.displayName,
                 localPath: item.localPath,
@@ -1018,6 +1066,15 @@ final class SyncCoordinator {
     }
 
     private func fileHash(url: URL) -> String? {
+        switch targetKind(for: url) {
+        case .file:
+            return regularFileHash(url: url)
+        case .folder:
+            return directoryHash(url: url)
+        }
+    }
+
+    private func regularFileHash(url: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer {
             try? handle.close()
@@ -1043,11 +1100,53 @@ final class SyncCoordinator {
         return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    private func directoryHash(url: URL) -> String? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
+            options: [.skipsPackageDescendants],
+            errorHandler: nil
+        ) else {
+            return nil
+        }
+
+        var hasher = SHA256()
+        var entries: [(relativePath: String, isDirectory: Bool, fileHash: String?)] = []
+        for case let childURL as URL in enumerator {
+            let relative = childURL.path.replacingOccurrences(of: url.path + "/", with: "")
+            var isDirectory = ObjCBool(false)
+            let exists = FileManager.default.fileExists(atPath: childURL.path, isDirectory: &isDirectory)
+            guard exists else { continue }
+            let childHash = isDirectory.boolValue ? nil : regularFileHash(url: childURL)
+            if !isDirectory.boolValue, childHash == nil {
+                return nil
+            }
+            entries.append((relative, isDirectory.boolValue, childHash))
+        }
+
+        for entry in entries.sorted(by: { $0.relativePath < $1.relativePath }) {
+            hasher.update(data: Data("path:\(entry.relativePath)\n".utf8))
+            if entry.isDirectory {
+                hasher.update(data: Data("type:dir\n".utf8))
+            } else {
+                hasher.update(data: Data("type:file\n".utf8))
+                hasher.update(data: Data((entry.fileHash ?? "").utf8))
+                hasher.update(data: Data("\n".utf8))
+            }
+        }
+
+        let digest = hasher.finalize()
+        return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     private func fileMtime(url: URL) -> Date? {
         (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
     }
 
     private func filePreview(url: URL) -> String {
+        if targetKind(for: url) == .folder {
+            return directoryPreview(url: url)
+        }
         guard let data = try? Data(contentsOf: url) else { return "无法读取文件内容" }
         if let text = String(data: data, encoding: .utf8) {
             return String(text.prefix(400))
@@ -1055,11 +1154,50 @@ final class SyncCoordinator {
         return "(二进制内容已省略)"
     }
 
-    private func makeVersionId(hash _: String) -> String {
+    private func directoryPreview(url: URL) -> String {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsPackageDescendants],
+            errorHandler: nil
+        ) else {
+            return "无法读取文件夹内容"
+        }
+
+        var entries: [String] = []
+        for case let childURL as URL in enumerator {
+            let relative = childURL.path.replacingOccurrences(of: url.path + "/", with: "")
+            entries.append(relative)
+            if entries.count >= 20 {
+                break
+            }
+        }
+
+        if entries.isEmpty {
+            return "(空文件夹)"
+        }
+
+        let suffix = entries.count >= 20 ? "\n..." : ""
+        return entries.joined(separator: "\n") + suffix
+    }
+
+    private func targetKind(for url: URL) -> SyncTargetKind {
+        var isDirectory = ObjCBool(false)
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return .folder
+        }
+        return .file
+    }
+
+    private func makeVersionId(previous previousVersionId: String?) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMddHHmmssSSS"
-        return formatter.string(from: Date())
+        let candidate = formatter.string(from: Date())
+        guard let previousVersionId, candidate <= previousVersionId, let previousNumeric = Int64(previousVersionId) else {
+            return candidate
+        }
+        return String(format: "%017lld", previousNumeric + 1)
     }
 
     private func backupLocalFile(localURL: URL) throws {
@@ -1091,7 +1229,20 @@ final class SyncCoordinator {
         return bundleURL.path
     }
 
+    private func launchAgentPlistPath() -> String {
+        NSHomeDirectory() + "/Library/LaunchAgents/\(Self.launchAgentLabel).plist"
+    }
+
     private func findRepositoryScript(named name: String) -> URL? {
+        if let resourceURL = Bundle.main.resourceURL {
+            let bundledScript = resourceURL
+                .appendingPathComponent("Scripts", isDirectory: true)
+                .appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: bundledScript.path) {
+                return bundledScript
+            }
+        }
+
         let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let direct = currentDirectory.appendingPathComponent(name)
         if FileManager.default.isExecutableFile(atPath: direct.path) {
@@ -1137,6 +1288,7 @@ enum CoordinatorError: LocalizedError {
     case invalidLocalDirectory
     case invalidManagedPath
     case cloudMetadataNotFound
+    case targetTypeMismatch
     case bothFilesMissing
     case hashFailed
     case localFileAlreadyManaged
@@ -1153,6 +1305,8 @@ enum CoordinatorError: LocalizedError {
             return "iCloud 目标路径不在 Filelay 管理区内。"
         case .cloudMetadataNotFound:
             return "找不到对应的云端同步元数据。"
+        case .targetTypeMismatch:
+            return "本地对象类型与云端对象类型不一致。"
         case .bothFilesMissing:
             return "本地和云端文件都不存在。"
         case .hashFailed:
