@@ -877,6 +877,21 @@ private struct SettingsPage: View {
 
     var body: some View {
         Form {
+            Section(L10n.text(.about, language)) {
+                HStack {
+                    Text(L10n.text(.version, language))
+                    Spacer()
+                    Text(BuildInfo.version)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text(L10n.text(.build, language))
+                    Spacer()
+                    Text(BuildInfo.build)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section(L10n.text(.managedRoot, language)) {
                 Text(store.settings.managedRootPath)
                     .font(.caption.monospaced())

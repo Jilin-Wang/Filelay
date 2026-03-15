@@ -1,70 +1,181 @@
 # Filelay
 
-`Filelay` 是一个 macOS 菜单栏常驻的指定文件同步工具。
+**Sync any file across your Macs with iCloud — even apps that don't support sync.**
 
-它解决的是这样一类问题：有些文件必须留在软件自己的原始目录里，比如配置文件、证书、脚本、使用数据或应用状态文件。这些文件不能直接搬进 iCloud Drive，但你又希望它们在多台 Mac 之间保持一致。`Filelay` 会保留这些文件原本的位置，再借助 iCloud Drive 作为中转层完成同步。
+> No extra subscriptions. No third-party cloud. Your data stays in your iCloud.
 
-## 核心特点
+Current version: `0.1.0` · Build `1`
 
-- 只同步你明确指定的文件，不接管整个文件夹
-- 本地文件保留在原始路径，不要求迁移到 iCloud 目录
-- 使用 iCloud Drive 作为中转，不额外引入第三方网盘
-- 每台设备都需要手动建立关联，不会偷偷创建本地文件
-- 本地变化自动上传，云端新版本自动同步到已关联设备
-- 双端同时修改时进入冲突处理，而不是静默覆盖
-- 支持版本信息、设备状态、同步历史和云端删除传播
+[English](#english) · [中文](#chinese)
 
-## 适用场景
+---
 
-- 同步应用配置文件
-- 同步软件使用数据或状态文件
-- 同步证书、脚本、模板、规则文件
-- 同步那些依赖固定路径、软件本身又不提供同步能力的文件
-- 软件提供同步但需要额外付费，而你已经有 iCloud Drive
+<a name="english"></a>
 
-## 工作方式
+## What is Filelay?
 
-1. 在 `Filelay` 中选择一个本地文件
-2. 决定把它上传为新的云端文件，或关联到一个已有云端文件
-3. 建立关联后，`Filelay` 会监听本地与云端变化，并在后台自动同步
-4. 如果两边同时发生修改，系统会进入冲突处理，由你决定保留哪一边
+Some apps store their config files, data, or state in fixed local paths that iCloud Drive can't reach. Filelay solves this — it watches those files and uses iCloud Drive as a relay layer to keep them in sync across all your Macs.
 
-重要规则：
+You don't need to move any files. You don't need to configure anything. Just pick a file, and Filelay takes care of the rest.
 
-- 设备 A 已同步的文件，不会自动出现在设备 B
-- 设备 B 必须手动选择本地文件并建立关联，才会开始同步
-- 自动识别只做提示，不会自动关联
+## Why Filelay?
 
-## 运行
+- **You already have iCloud** — no new subscriptions, no new accounts
+- **Your data stays in Apple's ecosystem** — nothing leaves iCloud
+- **Zero config** — no dotfiles, no YAML, no terminal required
+- **Works for any file** — app configs, certificates, scripts, saved state, license files
+
+## How It Works
+
+```text
+Local file -> (file watch) -> iCloud relay -> (distributed to) -> Other Macs
+```
+
+1. On Device A, pick a local file and upload it to iCloud as a relay copy
+2. On Device B, pick the corresponding local file and link it to the iCloud copy
+3. Filelay monitors both sides — local changes sync up, iCloud changes sync down
+
+**Important:** Files synced on Device A do **not** automatically appear on Device B. Device B must manually select its local file and establish the link. This is intentional — Filelay never creates or overwrites files without your explicit action.
+
+## Features
+
+- Watches only the files you explicitly select — no folder takeover
+- Local files stay at their original paths — no migration required
+- Bidirectional sync with automatic conflict detection
+- When both sides change simultaneously, you choose which version wins
+- Sync history, device status, and cloud deletion propagation
+- Runs as a macOS menu bar app — always on, never in the way
+
+## Getting Started
+
+### Run from source
 
 ```bash
 swift run Filelay
 ```
 
-也可以在 Xcode 中直接打开 `Package.swift` 运行 `Filelay` target。
+Or open `Package.swift` in Xcode and run the `Filelay` target.
 
-## 测试
+### Auto-start on login
+
+```bash
+# Install
+./install_menu_app_autostart.sh --app "/Applications/Filelay.app"
+
+# Remove
+./uninstall_menu_app_autostart.sh
+```
+
+### Run tests
 
 ```bash
 swift test
 ```
 
-## 开机自启动
+## Use Cases
 
-安装登录项：
+- Keep Cursor / VS Code / Raycast settings identical across Macs
+- Sync app license files or certificates
+- Sync shell configs or scripts stored outside `~/.config`
+- Sync app data files that live inside the app's own directory
+- Replace paid sync features you already get "for free" via iCloud
 
-```bash
-./install_menu_app_autostart.sh --app "/Applications/Filelay.app"
+## Requirements
+
+- macOS 13+
+- iCloud Drive enabled
+
+## License
+
+MIT
+
+---
+
+<a name="chinese"></a>
+
+# Filelay
+
+**用 iCloud 同步任意 Mac 软件的文件，即使该软件本身不支持同步。**
+
+> 不需要额外订阅。不引入第三方云服务。数据始终留在你的 iCloud 里。
+
+当前版本：`0.1.0` · Build `1`
+
+---
+
+## Filelay 是什么？
+
+有些软件把配置文件、数据或状态文件存放在固定的本地路径里，iCloud Drive 无法直接覆盖这些位置。Filelay 解决的就是这个问题，它监听这些文件，以 iCloud Drive 作为中转层，让它们在你的多台 Mac 之间保持同步。
+
+你不需要移动任何文件，不需要写任何配置，选择文件，剩下的交给 Filelay。
+
+## 为什么用 Filelay？
+
+- **你已经有 iCloud 了** — 不需要额外订阅，不需要注册新账号
+- **数据留在 Apple 生态内** — 没有任何数据流出 iCloud
+- **零配置** — 不需要 dotfiles、不需要 YAML、不需要打开终端
+- **适用于任意文件** — 应用配置、证书、脚本、使用数据、授权文件
+
+## 工作方式
+
+```text
+本地文件 -> (文件监听) -> iCloud 中转 -> (分发到) -> 其他 Mac
 ```
 
-移除登录项：
+1. 在设备 A 上选择一个本地文件，上传到 iCloud 作为中转副本
+2. 在设备 B 上选择对应的本地文件，与 iCloud 中的副本建立关联
+3. Filelay 同时监听两侧，本地变化自动上传，iCloud 变化自动同步到本地
+
+**重要说明：** 设备 A 同步的文件**不会**自动出现在设备 B。设备 B 必须手动选择本地文件并建立关联，才会开始同步。这是有意为之的设计，Filelay 不会在未经你明确操作的情况下创建或覆盖任何文件。
+
+## 核心特性
+
+- 只同步你明确指定的文件，不接管整个文件夹
+- 本地文件保留在原始路径，无需迁移
+- 双向同步，自动检测冲突
+- 双端同时修改时，由你决定保留哪一个版本
+- 支持同步历史、设备状态查看、云端删除传播
+- 以 macOS 菜单栏 app 形式常驻运行，不打扰日常使用
+
+## 快速开始
+
+### 从源码运行
 
 ```bash
+swift run Filelay
+```
+
+或在 Xcode 中打开 `Package.swift`，运行 `Filelay` target。
+
+### 开机自启动
+
+```bash
+# 安装
+./install_menu_app_autostart.sh --app "/Applications/Filelay.app"
+
+# 移除
 ./uninstall_menu_app_autostart.sh
 ```
 
-## 真实 iCloud 验收
+### 运行测试
 
-真实 iCloud 环境下的双设备验收清单见：
+```bash
+swift test
+```
 
-- [Docs/Real-iCloud-Acceptance-Checklist.md](Docs/Real-iCloud-Acceptance-Checklist.md)
+## 典型使用场景
+
+- 保持多台 Mac 上的 Cursor / VS Code / Raycast 配置完全一致
+- 同步软件授权文件或证书
+- 同步存放在 `~/.config` 以外位置的 shell 配置或脚本
+- 同步存放在软件自身目录下的应用数据文件
+- 替代某些软件的付费同步功能，你已经有 iCloud 了
+
+## 系统要求
+
+- macOS 13+
+- 已启用 iCloud Drive
+
+## 开源协议
+
+MIT

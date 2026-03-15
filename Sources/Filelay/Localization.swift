@@ -53,6 +53,9 @@ enum CopyKey {
     case useCloud
     case backupThenUseCloud
     case managedRoot
+    case about
+    case version
+    case build
     case syncBehavior
     case syncInterval
     case autoHints
@@ -208,6 +211,12 @@ enum L10n {
         case (.en, .backupThenUseCloud): return "Backup Then Use Cloud"
         case (.zhHans, .managedRoot): return "Filelay 管理区"
         case (.en, .managedRoot): return "Filelay Managed Root"
+        case (.zhHans, .about): return "关于"
+        case (.en, .about): return "About"
+        case (.zhHans, .version): return "版本"
+        case (.en, .version): return "Version"
+        case (.zhHans, .build): return "构建号"
+        case (.en, .build): return "Build"
         case (.zhHans, .syncBehavior): return "同步行为"
         case (.en, .syncBehavior): return "Sync Behavior"
         case (.zhHans, .syncInterval): return "同步检查间隔"
