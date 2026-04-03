@@ -22,6 +22,7 @@ final class SyncCoordinator {
         self.currentDevice = storage.currentDevice()
         let loadedSettings = storage.loadSettings()
         self.logger = StructuredLogger(logsDirectoryURL: storage.logsDirectoryURL)
+        storage.logger = self.logger
         let loadedItems = storage.loadSyncItems()
         let migrated = storage.migrateManagedRootIfNeeded(settings: loadedSettings, items: loadedItems)
         self.settings = migrated.settings
@@ -111,20 +112,21 @@ final class SyncCoordinator {
     }
 
     func updateLaunchAtLoginEnabled(_ enabled: Bool) -> String? {
-        queue.sync {
+        let language: AppLanguage = queue.sync {
             settings.launchAtLoginEnabled = enabled
             storage.saveSettings(settings)
             publishSnapshot()
+            return settings.language
         }
 
         let scriptName = enabled ? "install_menu_app_autostart.sh" : "uninstall_menu_app_autostart.sh"
         guard let scriptURL = findRepositoryScript(named: scriptName) else {
-            return "已保存设置，但找不到登录项脚本。"
+            return L10n.text(.noteLoginScriptNotFound, language)
         }
 
         if enabled {
             guard let appPath = currentAppBundlePath() else {
-                return "已保存设置，但当前不是 .app 运行，未执行登录项脚本。"
+                return L10n.text(.noteLoginScriptNotApp, language)
             }
             return runProcess(executableURL: scriptURL, arguments: ["--app", appPath])
         }
@@ -171,6 +173,10 @@ final class SyncCoordinator {
         max(settings.syncIntervalSeconds, 5)
     }
 
+    private var lang: AppLanguage {
+        settings.language
+    }
+
     private func scheduleWatchDrivenSyncLocked() {
         watchSyncGeneration &+= 1
         let generation = watchSyncGeneration
@@ -212,16 +218,17 @@ final class SyncCoordinator {
             targets[target.key] = target
         }
 
-        insertTarget(path: settings.managedRootPath, kind: .directory)
+        // 仅监听云端“数据载荷”变化（CloudFiles），不要监听 metadata 写入。
+        // 否则本地/远端在“内容不变”时也会反复写 metadata 回执时间戳，从而引发高频触发。
+        let cloudFilesRootPath = storage.cloudFilesRootURL(rootPath: settings.managedRootPath).path
+        insertTarget(path: cloudFilesRootPath, kind: .directory)
 
         for item in items {
             let localURL = URL(fileURLWithPath: item.localPath)
             let cloudURL = URL(fileURLWithPath: item.cloudFilePath)
-            let metadataURL = storage.metadataURL(for: cloudURL, cloudFileId: item.cloudFileId)
 
             insertTarget(path: localURL.deletingLastPathComponent().path, kind: .directory)
             insertTarget(path: cloudURL.deletingLastPathComponent().path, kind: .directory)
-            insertTarget(path: metadataURL.deletingLastPathComponent().path, kind: .directory)
 
             if item.kind == .folder {
                 insertTarget(path: localURL.path, kind: .directory)
@@ -230,7 +237,6 @@ final class SyncCoordinator {
                 insertTarget(path: localURL.path, kind: .file)
                 insertTarget(path: cloudURL.path, kind: .file)
             }
-            insertTarget(path: metadataURL.path, kind: .file)
         }
 
         return Array(targets.values)
@@ -253,7 +259,7 @@ final class SyncCoordinator {
                     cloudFilePath: discovered.metadata.cloudFilePath,
                     fileName: URL(fileURLWithPath: discovered.metadata.cloudFilePath).lastPathComponent,
                     confidence: .discovered,
-                    reason: settings.language == .en ? "Existing cloud file" : "已存在云端文件",
+                    reason: L10n.text(.reasonExistingCloudFile, lang),
                     cloudVersion: discovered.metadata.cloudVersion
                 )
             }
@@ -289,7 +295,7 @@ final class SyncCoordinator {
                             cloudFilePath: discovered.metadata.cloudFilePath,
                             fileName: URL(fileURLWithPath: discovered.metadata.cloudFilePath).lastPathComponent,
                             confidence: .exactHash,
-                            reason: settings.language == .en ? "Exact content hash match" : "内容哈希一致",
+                            reason: L10n.text(.reasonExactHashMatch, lang),
                             cloudVersion: discovered.metadata.cloudVersion
                         )
                     }
@@ -309,7 +315,7 @@ final class SyncCoordinator {
                         cloudFilePath: match.metadata.cloudFilePath,
                         fileName: URL(fileURLWithPath: match.metadata.cloudFilePath).lastPathComponent,
                         confidence: .uniqueName,
-                        reason: settings.language == .en ? "Unique same-name candidate" : "同名文件且是唯一候选",
+                        reason: L10n.text(.reasonUniqueNameMatch, lang),
                         cloudVersion: match.metadata.cloudVersion
                     )
                 ]
@@ -348,7 +354,7 @@ final class SyncCoordinator {
                 throw CoordinatorError.cloudFileAlreadyManaged
             }
 
-            let event = makeEvent(action: .added, versionId: nil, note: "通过上传模式添加")
+            let event = makeEvent(action: .added, versionId: nil, note: L10n.text(.noteAddedViaUpload, lang))
             let item = SyncItem(
                 id: UUID().uuidString,
                 kind: targetKind,
@@ -413,7 +419,7 @@ final class SyncCoordinator {
             var metadata = canonicalize(metadata: discovered.metadata)
             metadata.eventLog = mergeEvents(
                 current: metadata.eventLog,
-                newEvent: makeEvent(action: .linked, versionId: metadata.cloudVersion?.versionId, note: "新设备建立关联")
+                newEvent: makeEvent(action: .linked, versionId: metadata.cloudVersion?.versionId, note: L10n.text(.noteNewDeviceLinked, lang))
             )
 
             var item = SyncItem(
@@ -434,14 +440,40 @@ final class SyncCoordinator {
                 createdAt: createdAt
             )
 
-                if let localHash, let cloudHash, localHash == cloudHash {
-                    updateReceipt(metadata: &metadata, versionId: metadata.cloudVersion?.versionId ?? makeVersionId(previous: nil), localURL: localURL, status: .synced)
-                    try storage.saveMetadata(metadata, for: cloudURL)
+            if let localHash, let cloudHash, localHash == cloudHash {
+                let versionId = metadata.cloudVersion?.versionId ?? makeVersionId(previous: nil)
+
+                // 云端元数据可能尚未初始化 cloudVersion（例如首次手动关联时）。
+                // 需要先补齐，保证后续“基线版本”判断稳定。
+                if metadata.cloudVersion == nil {
+                    metadata.cloudVersion = CloudVersion(
+                        versionId: versionId,
+                        contentHash: cloudHash,
+                        updatedAt: Date().filelayString,
+                        updatedByDevice: currentDevice,
+                        sourceFileMtime: fileMtime(url: cloudURL)?.filelayString ?? Date().filelayString
+                    )
+                }
+
+                _ = updateReceipt(metadata: &metadata, versionId: versionId, localURL: localURL, status: .synced)
+                try storage.saveMetadata(metadata, for: cloudURL)
+
                 item.deviceReceipts = metadata.deviceReceipts
                 item.history = metadata.eventLog
                 item.status = .synced
-                item.lastSeenCloudVersionId = metadata.cloudVersion?.versionId
+                item.cloudVersion = metadata.cloudVersion
+                item.lastSeenCloudVersionId = versionId
             } else {
+                if metadata.cloudVersion == nil, let cloudHash {
+                    metadata.cloudVersion = CloudVersion(
+                        versionId: makeVersionId(previous: nil),
+                        contentHash: cloudHash,
+                        updatedAt: Date().filelayString,
+                        updatedByDevice: currentDevice,
+                        sourceFileMtime: fileMtime(url: cloudURL)?.filelayString ?? Date().filelayString
+                    )
+                }
+
                 item.status = .conflict
                 item.conflictState = makeConflictState(
                     localURL: localURL,
@@ -450,11 +482,15 @@ final class SyncCoordinator {
                     cloudHash: cloudHash ?? "unknown",
                     cloudVersionId: metadata.cloudVersion?.versionId
                 )
+
                 metadata.eventLog = mergeEvents(
                     current: metadata.eventLog,
-                    newEvent: makeEvent(action: .conflictDetected, versionId: metadata.cloudVersion?.versionId, note: "首次关联时发现本地与云端内容不同")
+                    newEvent: makeEvent(action: .conflictDetected, versionId: metadata.cloudVersion?.versionId, note: L10n.text(.noteLinkConflictDetected, lang))
                 )
                 item.history = metadata.eventLog
+                item.deviceReceipts = metadata.deviceReceipts
+                item.cloudVersion = metadata.cloudVersion
+                item.lastSeenCloudVersionId = metadata.cloudVersion?.versionId
                 try storage.saveMetadata(metadata, for: cloudURL)
             }
 
@@ -480,16 +516,16 @@ final class SyncCoordinator {
                 var metadata = self.canonicalize(metadata: loaded.metadata)
                 switch choice {
                 case .keepLocal:
-                    try self.push(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: "冲突解决：保留本地")
+                    try self.push(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: L10n.text(.noteConflictResolveKeepLocal, self.lang))
                 case .useCloud:
-                    try self.pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: "冲突解决：采用云端")
+                    try self.pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: L10n.text(.noteConflictResolveUseCloud, self.lang))
                 case .backupLocalThenUseCloud:
                     try self.backupLocalFile(localURL: localURL)
-                    try self.pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: "冲突解决：备份后采用云端")
+                    try self.pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: L10n.text(.noteConflictResolveBackupThenUseCloud, self.lang))
                 }
                 metadata.eventLog = self.mergeEvents(
                     current: metadata.eventLog,
-                    newEvent: self.makeEvent(action: .conflictResolved, versionId: item.cloudVersion?.versionId, note: "冲突已手动解决")
+                    newEvent: self.makeEvent(action: .conflictResolved, versionId: item.cloudVersion?.versionId, note: L10n.text(.noteConflictResolvedManually, self.lang))
                 )
                 try self.storage.saveMetadata(metadata, for: cloudURL)
                 item.history = metadata.eventLog
@@ -502,14 +538,15 @@ final class SyncCoordinator {
                 self.persistItems()
                 self.publishSnapshot()
             } catch {
+                let detail = error.filelayLocalizedDescription(language: self.lang)
                 item.status = .error
-                item.lastErrorMessage = error.localizedDescription
+                item.lastErrorMessage = detail
                 item.history = self.mergeEvents(
                     current: item.history,
-                    newEvent: self.makeEvent(action: .error, versionId: item.cloudVersion?.versionId, note: "冲突处理失败：\(error.localizedDescription)")
+                    newEvent: self.makeEvent(action: .error, versionId: item.cloudVersion?.versionId, note: L10n.text(.noteConflictResolveFailed(detail), self.lang))
                 )
                 self.items[index] = item
-                self.log(.error, category: "conflict.resolve_failed", message: error.localizedDescription, item: item)
+                self.log(.error, category: "conflict.resolve_failed", message: detail, item: item)
                 self.persistItems()
                 self.publishSnapshot()
             }
@@ -534,7 +571,7 @@ final class SyncCoordinator {
             metadata.deletedByDevice = currentDevice
             metadata.eventLog = mergeEvents(
                 current: metadata.eventLog,
-                newEvent: makeEvent(action: .deleted, versionId: metadata.cloudVersion?.versionId, note: "删除云端文件")
+                newEvent: makeEvent(action: .deleted, versionId: metadata.cloudVersion?.versionId, note: L10n.text(.noteDeleteCloudFile, lang))
             )
             try storage.saveMetadata(metadata, for: cloudURL)
 
@@ -612,7 +649,7 @@ final class SyncCoordinator {
 
             if localExists && !cloudExists {
                 item.status = .uploading
-                try push(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: trigger == "manual" ? "手动触发上传" : "检测到本地更新")
+                try push(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: trigger == "manual" ? L10n.text(.noteManualUpload, lang) : L10n.text(.noteLocalUpdateDetected, lang))
                 items[index] = item
                 persistItems()
                 return
@@ -620,7 +657,7 @@ final class SyncCoordinator {
 
             if !localExists && cloudExists {
                 item.status = .downloading
-                try pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: "本地缺失，自动从云端恢复")
+                try pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: L10n.text(.noteLocalMissingRestored, lang))
                 items[index] = item
                 persistItems()
                 return
@@ -643,8 +680,10 @@ final class SyncCoordinator {
 
             if localHash == cloudHash {
                 if let version = metadata.cloudVersion?.versionId {
-                    updateReceipt(metadata: &metadata, versionId: version, localURL: localURL, status: .synced)
-                    try storage.saveMetadata(metadata, for: cloudURL)
+                    let receiptChanged = updateReceipt(metadata: &metadata, versionId: version, localURL: localURL, status: .synced)
+                    if receiptChanged {
+                        try storage.saveMetadata(metadata, for: cloudURL)
+                    }
                     item.lastSeenCloudVersionId = version
                 }
                 item.lastKnownLocalHash = localHash
@@ -667,16 +706,16 @@ final class SyncCoordinator {
             let conflictNote: String
             if hasNoBaseline {
                 decision = .conflict
-                conflictNote = "首次同步需要手动确认"
+                conflictNote = L10n.text(.noteFirstSyncConfirm, lang)
             } else if cloudNewForDevice {
                 decision = .conflict
-                conflictNote = localChanged ? "检测到本地与云端都已更新，等待手动确认" : "检测到云端新版本，等待本地确认"
+                conflictNote = localChanged ? L10n.text(.noteBothSidesUpdated, lang) : L10n.text(.noteCloudNewVersion, lang)
             } else if localChanged {
                 decision = .pushLocalToCloud
                 conflictNote = ""
             } else {
                 decision = .conflict
-                conflictNote = "检测到本地与云端状态不一致，等待手动确认"
+                conflictNote = L10n.text(.noteLocalCloudInconsistent, lang)
             }
 
             switch decision {
@@ -685,11 +724,11 @@ final class SyncCoordinator {
             case .pushLocalToCloud:
                 item.status = .uploading
                 log(.info, category: "sync.push_requested", message: "Detected local change and preparing upload", item: item, trigger: trigger)
-                try push(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: "检测到本地变更")
+                try push(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: L10n.text(.noteLocalChangeDetected, lang))
             case .pullCloudToLocal:
                 item.status = .downloading
                 log(.info, category: "sync.pull_requested", message: "Detected cloud change and preparing local apply", item: item, trigger: trigger)
-                try pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: "检测到云端新版本")
+                try pull(item: &item, metadata: &metadata, localURL: localURL, cloudURL: cloudURL, note: L10n.text(.noteCloudNewVersionDetected, lang))
             case .conflict:
                 item.status = .conflict
                 item.conflictState = makeConflictState(
@@ -714,14 +753,15 @@ final class SyncCoordinator {
             items[index] = item
             persistItems()
         } catch {
+            let detail = error.filelayLocalizedDescription(language: lang)
             item.status = .error
-            item.lastErrorMessage = error.localizedDescription
+            item.lastErrorMessage = detail
             item.history = mergeEvents(
                 current: item.history,
-                newEvent: makeEvent(action: .error, versionId: item.cloudVersion?.versionId, note: error.localizedDescription)
+                newEvent: makeEvent(action: .error, versionId: item.cloudVersion?.versionId, note: detail)
             )
             items[index] = item
-            log(.error, category: "sync.error", message: error.localizedDescription, item: item, trigger: trigger)
+            log(.error, category: "sync.error", message: detail, item: item, trigger: trigger)
             persistItems()
         }
     }
@@ -813,14 +853,41 @@ final class SyncCoordinator {
         ])
     }
 
-    private func updateReceipt(metadata: inout CloudFileMetadata, versionId: String, localURL: URL, status: SyncItemStatus) {
-        metadata.deviceReceipts[currentDevice.id] = DeviceReceipt(
+    @discardableResult
+    private func updateReceipt(metadata: inout CloudFileMetadata, versionId: String, localURL: URL, status: SyncItemStatus) -> Bool {
+        let now = Date().filelayString
+        let existing = metadata.deviceReceipts[currentDevice.id]
+
+        let localFileMtimeAfterApply = fileMtime(url: localURL)?.filelayString
+            ?? existing?.localFileMtimeAfterApply
+            ?? now
+
+        // 如果同一版本/同一状态/同一 mtime 的“收据”没有变化，就不要更新时间戳，
+        // 避免 metadata 被反复写入触发高频同步循环。
+        let lastAppliedAt: String = {
+            if let existing,
+               existing.lastAppliedVersionId == versionId,
+               existing.lastSyncStatus == status,
+               existing.localFileMtimeAfterApply == localFileMtimeAfterApply {
+                return existing.lastAppliedAt
+            }
+            return now
+        }()
+
+        let newReceipt = DeviceReceipt(
             device: currentDevice,
             lastAppliedVersionId: versionId,
-            lastAppliedAt: Date().filelayString,
-            localFileMtimeAfterApply: fileMtime(url: localURL)?.filelayString ?? Date().filelayString,
+            lastAppliedAt: lastAppliedAt,
+            localFileMtimeAfterApply: localFileMtimeAfterApply,
             lastSyncStatus: status
         )
+
+        if let existing, existing == newReceipt {
+            return false
+        }
+
+        metadata.deviceReceipts[currentDevice.id] = newReceipt
+        return true
     }
 
     private func validate(localURL: URL, cloudURL: URL) throws {
@@ -1031,13 +1098,13 @@ final class SyncCoordinator {
 
     private func aggregateStatus() -> SyncStatus {
         if items.contains(where: { $0.status == .conflict }) {
-            return .warning(settings.language == .en ? "Pending conflicts" : "存在待处理冲突")
+            return .warning(L10n.text(.aggregatePendingConflicts, lang))
         }
         if items.contains(where: { $0.status == .uploading || $0.status == .downloading }) {
             return .syncing
         }
         if items.contains(where: { $0.status == .error }) {
-            return .error(settings.language == .en ? "Synchronization errors" : "存在同步错误")
+            return .error(L10n.text(.aggregateSyncErrors, lang))
         }
         return .idle
     }
@@ -1103,30 +1170,89 @@ final class SyncCoordinator {
     private func directoryHash(url: URL) -> String? {
         guard let enumerator = FileManager.default.enumerator(
             at: url,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey],
+            includingPropertiesForKeys: [
+                URLResourceKey.isRegularFileKey,
+                URLResourceKey.isDirectoryKey,
+                URLResourceKey.isSymbolicLinkKey
+            ],
             options: [.skipsPackageDescendants],
             errorHandler: nil
         ) else {
             return nil
         }
 
+        struct Entry {
+            let relativePath: String
+            let isDirectory: Bool
+            let isSymlink: Bool
+            let fileHash: String?
+            let symlinkDestination: String?
+        }
+
         var hasher = SHA256()
-        var entries: [(relativePath: String, isDirectory: Bool, fileHash: String?)] = []
+        var entries: [Entry] = []
         for case let childURL as URL in enumerator {
             let relative = childURL.path.replacingOccurrences(of: url.path + "/", with: "")
-            var isDirectory = ObjCBool(false)
-            let exists = FileManager.default.fileExists(atPath: childURL.path, isDirectory: &isDirectory)
-            guard exists else { continue }
-            let childHash = isDirectory.boolValue ? nil : regularFileHash(url: childURL)
-            if !isDirectory.boolValue, childHash == nil {
-                return nil
+
+            let values = (try? childURL.resourceValues(
+                forKeys: [URLResourceKey.isDirectoryKey, URLResourceKey.isSymbolicLinkKey]
+            ))
+            let isDirectory = values?.isDirectory ?? false
+            let isSymlink = values?.isSymbolicLink ?? false
+
+            // 对符号链接：不跟随目标内容（避免目录环/递归爆炸），改用“链接本身”和目标路径参与 hash。
+            if isSymlink {
+                if isDirectory {
+                    // 防止 enumerator 继续遍历指向的目录内容。
+                    enumerator.skipDescendants()
+                }
+                let symlinkDestination = try? FileManager.default.destinationOfSymbolicLink(atPath: childURL.path)
+                entries.append(
+                    Entry(
+                        relativePath: relative,
+                        isDirectory: false,
+                        isSymlink: true,
+                        fileHash: nil,
+                        symlinkDestination: symlinkDestination
+                    )
+                )
+                continue
             }
-            entries.append((relative, isDirectory.boolValue, childHash))
+
+            if isDirectory {
+                entries.append(
+                    Entry(
+                        relativePath: relative,
+                        isDirectory: true,
+                        isSymlink: false,
+                        fileHash: nil,
+                        symlinkDestination: nil
+                    )
+                )
+            } else {
+                guard let childHash = regularFileHash(url: childURL) else {
+                    return nil
+                }
+                entries.append(
+                    Entry(
+                        relativePath: relative,
+                        isDirectory: false,
+                        isSymlink: false,
+                        fileHash: childHash,
+                        symlinkDestination: nil
+                    )
+                )
+            }
         }
 
         for entry in entries.sorted(by: { $0.relativePath < $1.relativePath }) {
             hasher.update(data: Data("path:\(entry.relativePath)\n".utf8))
-            if entry.isDirectory {
+
+            if entry.isSymlink {
+                hasher.update(data: Data("type:symlink\n".utf8))
+                hasher.update(data: Data((entry.symlinkDestination ?? "").utf8))
+                hasher.update(data: Data("\n".utf8))
+            } else if entry.isDirectory {
                 hasher.update(data: Data("type:dir\n".utf8))
             } else {
                 hasher.update(data: Data("type:file\n".utf8))
@@ -1147,11 +1273,22 @@ final class SyncCoordinator {
         if targetKind(for: url) == .folder {
             return directoryPreview(url: url)
         }
-        guard let data = try? Data(contentsOf: url) else { return "无法读取文件内容" }
+        let maxBytes = 64 * 1024
+
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return L10n.text(.noteCannotReadFile, lang)
+        }
+
+        defer { try? handle.close() }
+
+        let data = (try? handle.read(upToCount: maxBytes)) ?? Data()
+        guard !data.isEmpty else { return L10n.text(.noteCannotReadFile, lang) }
+
         if let text = String(data: data, encoding: .utf8) {
             return String(text.prefix(400))
         }
-        return "(二进制内容已省略)"
+
+        return L10n.text(.notePreviewBinaryOmitted, lang)
     }
 
     private func directoryPreview(url: URL) -> String {
@@ -1161,7 +1298,7 @@ final class SyncCoordinator {
             options: [.skipsPackageDescendants],
             errorHandler: nil
         ) else {
-            return "无法读取文件夹内容"
+            return L10n.text(.noteCannotReadFolder, lang)
         }
 
         var entries: [String] = []
@@ -1174,7 +1311,7 @@ final class SyncCoordinator {
         }
 
         if entries.isEmpty {
-            return "(空文件夹)"
+            return L10n.text(.noteEmptyFolder, lang)
         }
 
         let suffix = entries.count >= 20 ? "\n..." : ""
@@ -1269,9 +1406,9 @@ final class SyncCoordinator {
             if process.terminationStatus == 0 {
                 return nil
             }
-            return "已保存设置，但登录项脚本执行失败。"
+            return L10n.text(.noteLoginScriptFailed, lang)
         } catch {
-            return "已保存设置，但无法执行登录项脚本：\(error.localizedDescription)"
+            return L10n.text(.noteLoginScriptExecError(error.localizedDescription), lang)
         }
     }
 }
@@ -1296,27 +1433,33 @@ enum CoordinatorError: LocalizedError {
     case cloudTargetAlreadyExists
 
     var errorDescription: String? {
+        localizedDescription(language: .en)
+    }
+
+    func localizedDescription(language: AppLanguage) -> String {
+        let key: CopyKey
         switch self {
-        case .invalidLocalFile:
-            return "本地文件不存在或不可读。"
-        case .invalidLocalDirectory:
-            return "本地文件所在目录不存在。"
-        case .invalidManagedPath:
-            return "iCloud 目标路径不在 Filelay 管理区内。"
-        case .cloudMetadataNotFound:
-            return "找不到对应的云端同步元数据。"
-        case .targetTypeMismatch:
-            return "本地对象类型与云端对象类型不一致。"
-        case .bothFilesMissing:
-            return "本地和云端文件都不存在。"
-        case .hashFailed:
-            return "无法计算文件哈希。"
-        case .localFileAlreadyManaged:
-            return "这个本地文件已经在同步列表中。"
-        case .cloudFileAlreadyManaged:
-            return "这个云端文件已经与本机条目建立关联。"
-        case .cloudTargetAlreadyExists:
-            return "目标目录里已经有同名云端文件。请换一个名称、换一个目录，或改用“关联已有云端文件”。"
+        case .invalidLocalFile: key = .errorInvalidLocalFile
+        case .invalidLocalDirectory: key = .errorInvalidLocalDirectory
+        case .invalidManagedPath: key = .errorInvalidManagedPath
+        case .cloudMetadataNotFound: key = .errorCloudMetadataNotFound
+        case .targetTypeMismatch: key = .errorTargetTypeMismatch
+        case .bothFilesMissing: key = .errorBothFilesMissing
+        case .hashFailed: key = .errorHashFailed
+        case .localFileAlreadyManaged: key = .errorLocalFileAlreadyManaged
+        case .cloudFileAlreadyManaged: key = .errorCloudFileAlreadyManaged
+        case .cloudTargetAlreadyExists: key = .errorCloudTargetAlreadyExists
         }
+        return L10n.text(key, language)
+    }
+}
+
+extension Error {
+    /// Uses app-localized `CoordinatorError` strings when applicable; otherwise `localizedDescription`.
+    func filelayLocalizedDescription(language: AppLanguage) -> String {
+        if let coordinator = self as? CoordinatorError {
+            return coordinator.localizedDescription(language: language)
+        }
+        return localizedDescription
     }
 }

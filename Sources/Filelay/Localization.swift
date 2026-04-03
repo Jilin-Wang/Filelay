@@ -101,6 +101,51 @@ enum CopyKey {
     case showInFinder
     case dragLocalFileTitle
     case dragLocalFileMessage
+    // SyncEngine note keys
+    case noteAddedViaUpload
+    case noteNewDeviceLinked
+    case noteLinkConflictDetected
+    case noteConflictResolveKeepLocal
+    case noteConflictResolveUseCloud
+    case noteConflictResolveBackupThenUseCloud
+    case noteConflictResolvedManually
+    case noteDeleteCloudFile
+    case noteManualUpload
+    case noteLocalUpdateDetected
+    case noteLocalMissingRestored
+    case noteFirstSyncConfirm
+    case noteBothSidesUpdated
+    case noteCloudNewVersion
+    case noteLocalCloudInconsistent
+    case noteLocalChangeDetected
+    case noteCloudNewVersionDetected
+    case noteCannotReadFile
+    case noteCannotReadFolder
+    case noteEmptyFolder
+    case noteLoginScriptNotFound
+    case noteLoginScriptFailed
+    case noteLoginScriptNotApp
+    case noteLoginScriptExecError(String)
+    case noteConflictResolveFailed(String)
+    case notePreviewBinaryOmitted
+    // Discovery reason keys
+    case reasonExistingCloudFile
+    case reasonExactHashMatch
+    case reasonUniqueNameMatch
+    // Aggregate status keys
+    case aggregatePendingConflicts
+    case aggregateSyncErrors
+    // CoordinatorError keys
+    case errorInvalidLocalFile
+    case errorInvalidLocalDirectory
+    case errorInvalidManagedPath
+    case errorCloudMetadataNotFound
+    case errorTargetTypeMismatch
+    case errorBothFilesMissing
+    case errorHashFailed
+    case errorLocalFileAlreadyManaged
+    case errorCloudFileAlreadyManaged
+    case errorCloudTargetAlreadyExists
 }
 
 enum L10n {
@@ -307,6 +352,96 @@ enum L10n {
         case (.en, .dragLocalFileTitle): return "Drop a file or folder here"
         case (.zhHans, .dragLocalFileMessage): return "或点击选择一个本地文件或文件夹"
         case (.en, .dragLocalFileMessage): return "or click to choose a local file or folder"
+
+        // SyncEngine notes
+        case (.zhHans, .noteAddedViaUpload): return "通过上传模式添加"
+        case (.en, .noteAddedViaUpload): return "Added via upload"
+        case (.zhHans, .noteNewDeviceLinked): return "新设备建立关联"
+        case (.en, .noteNewDeviceLinked): return "New device linked"
+        case (.zhHans, .noteLinkConflictDetected): return "首次关联时发现本地与云端内容不同"
+        case (.en, .noteLinkConflictDetected): return "Local and cloud content differ at initial link"
+        case (.zhHans, .noteConflictResolveKeepLocal): return "冲突解决：保留本地"
+        case (.en, .noteConflictResolveKeepLocal): return "Conflict resolved: keep local"
+        case (.zhHans, .noteConflictResolveUseCloud): return "冲突解决：采用云端"
+        case (.en, .noteConflictResolveUseCloud): return "Conflict resolved: use cloud"
+        case (.zhHans, .noteConflictResolveBackupThenUseCloud): return "冲突解决：备份后采用云端"
+        case (.en, .noteConflictResolveBackupThenUseCloud): return "Conflict resolved: backup then use cloud"
+        case (.zhHans, .noteConflictResolvedManually): return "冲突已手动解决"
+        case (.en, .noteConflictResolvedManually): return "Conflict resolved manually"
+        case (.zhHans, .noteDeleteCloudFile): return "删除云端文件"
+        case (.en, .noteDeleteCloudFile): return "Deleted cloud file"
+        case (.zhHans, .noteManualUpload): return "手动触发上传"
+        case (.en, .noteManualUpload): return "Manual upload triggered"
+        case (.zhHans, .noteLocalUpdateDetected): return "检测到本地更新"
+        case (.en, .noteLocalUpdateDetected): return "Local update detected"
+        case (.zhHans, .noteLocalMissingRestored): return "本地缺失，自动从云端恢复"
+        case (.en, .noteLocalMissingRestored): return "Local file missing, restored from cloud"
+        case (.zhHans, .noteFirstSyncConfirm): return "首次同步需要手动确认"
+        case (.en, .noteFirstSyncConfirm): return "First sync requires manual confirmation"
+        case (.zhHans, .noteBothSidesUpdated): return "检测到本地与云端都已更新，等待手动确认"
+        case (.en, .noteBothSidesUpdated): return "Both local and cloud updated, awaiting manual confirmation"
+        case (.zhHans, .noteCloudNewVersion): return "检测到云端新版本，等待本地确认"
+        case (.en, .noteCloudNewVersion): return "Cloud version updated, awaiting local confirmation"
+        case (.zhHans, .noteLocalCloudInconsistent): return "检测到本地与云端状态不一致，等待手动确认"
+        case (.en, .noteLocalCloudInconsistent): return "Local and cloud inconsistent, awaiting manual confirmation"
+        case (.zhHans, .noteLocalChangeDetected): return "检测到本地变更"
+        case (.en, .noteLocalChangeDetected): return "Local change detected"
+        case (.zhHans, .noteCloudNewVersionDetected): return "检测到云端新版本"
+        case (.en, .noteCloudNewVersionDetected): return "Cloud new version detected"
+        case (.zhHans, .noteCannotReadFile): return "无法读取文件内容"
+        case (.en, .noteCannotReadFile): return "Unable to read file content"
+        case (.zhHans, .noteCannotReadFolder): return "无法读取文件夹内容"
+        case (.en, .noteCannotReadFolder): return "Unable to read folder content"
+        case (.zhHans, .noteEmptyFolder): return "(空文件夹)"
+        case (.en, .noteEmptyFolder): return "(empty folder)"
+        case (.zhHans, .noteLoginScriptNotFound): return "已保存设置，但找不到登录项脚本。"
+        case (.en, .noteLoginScriptNotFound): return "Settings saved, but login script not found."
+        case (.zhHans, .noteLoginScriptFailed): return "已保存设置，但登录项脚本执行失败。"
+        case (.en, .noteLoginScriptFailed): return "Settings saved, but login script failed."
+        case (.zhHans, .noteLoginScriptNotApp): return "已保存设置，但当前不是 .app 运行，未执行登录项脚本。"
+        case (.en, .noteLoginScriptNotApp): return "Settings saved, but not running as .app bundle; login script skipped."
+        case (.zhHans, .noteLoginScriptExecError(let detail)): return "已保存设置，但无法执行登录项脚本：\(detail)"
+        case (.en, .noteLoginScriptExecError(let detail)): return "Settings saved, but the login script could not run: \(detail)"
+        case (.zhHans, .noteConflictResolveFailed(let detail)): return "冲突处理失败：\(detail)"
+        case (.en, .noteConflictResolveFailed(let detail)): return "Conflict resolution failed: \(detail)"
+        case (.zhHans, .notePreviewBinaryOmitted): return "（二进制内容已省略）"
+        case (.en, .notePreviewBinaryOmitted): return "(binary content omitted)"
+
+        // Discovery reasons
+        case (.zhHans, .reasonExistingCloudFile): return "已存在云端文件"
+        case (.en, .reasonExistingCloudFile): return "Existing cloud file"
+        case (.zhHans, .reasonExactHashMatch): return "内容哈希一致"
+        case (.en, .reasonExactHashMatch): return "Exact content hash match"
+        case (.zhHans, .reasonUniqueNameMatch): return "同名文件且是唯一候选"
+        case (.en, .reasonUniqueNameMatch): return "Unique same-name candidate"
+
+        // Aggregate status
+        case (.zhHans, .aggregatePendingConflicts): return "存在待处理冲突"
+        case (.en, .aggregatePendingConflicts): return "Pending conflicts"
+        case (.zhHans, .aggregateSyncErrors): return "存在同步错误"
+        case (.en, .aggregateSyncErrors): return "Synchronization errors"
+
+        // CoordinatorError
+        case (.zhHans, .errorInvalidLocalFile): return "本地文件不存在或不可读。"
+        case (.en, .errorInvalidLocalFile): return "Local file does not exist or is not readable."
+        case (.zhHans, .errorInvalidLocalDirectory): return "本地文件所在目录不存在。"
+        case (.en, .errorInvalidLocalDirectory): return "Local file directory does not exist."
+        case (.zhHans, .errorInvalidManagedPath): return "iCloud 目标路径不在 Filelay 管理区内。"
+        case (.en, .errorInvalidManagedPath): return "iCloud target path is outside the Filelay managed root."
+        case (.zhHans, .errorCloudMetadataNotFound): return "找不到对应的云端同步元数据。"
+        case (.en, .errorCloudMetadataNotFound): return "Cloud sync metadata not found."
+        case (.zhHans, .errorTargetTypeMismatch): return "本地对象类型与云端对象类型不一致。"
+        case (.en, .errorTargetTypeMismatch): return "Local and cloud item types do not match."
+        case (.zhHans, .errorBothFilesMissing): return "本地和云端文件都不存在。"
+        case (.en, .errorBothFilesMissing): return "Both local and cloud files are missing."
+        case (.zhHans, .errorHashFailed): return "无法计算文件哈希。"
+        case (.en, .errorHashFailed): return "Failed to compute file hash."
+        case (.zhHans, .errorLocalFileAlreadyManaged): return "这个本地文件已经在同步列表中。"
+        case (.en, .errorLocalFileAlreadyManaged): return "This local file is already in the sync list."
+        case (.zhHans, .errorCloudFileAlreadyManaged): return "这个云端文件已经与本机条目建立关联。"
+        case (.en, .errorCloudFileAlreadyManaged): return "This cloud file is already linked to a local item."
+        case (.zhHans, .errorCloudTargetAlreadyExists): return "目标目录里已经有同名云端文件。请换一个名称、换一个目录，或改用「关联已有云端文件」。"
+        case (.en, .errorCloudTargetAlreadyExists): return "A cloud file with the same name already exists. Choose a different name, folder, or link the existing file."
         }
     }
 

@@ -10,7 +10,15 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Filelay",
-            path: "Sources/Filelay"
+            path: "Sources/Filelay",
+            linkerSettings: [
+                .unsafeFlags([
+                    "-Xlinker", "-sectcreate",
+                    "-Xlinker", "__TEXT",
+                    "-Xlinker", "__info_plist",
+                    "-Xlinker", "Support/Filelay-Info.plist",
+                ]),
+            ]
         ),
         .testTarget(
             name: "FilelayTests",

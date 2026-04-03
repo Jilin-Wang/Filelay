@@ -169,6 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if hasAnotherRunningInstance() {
+            NSApp.terminate(nil)
+            return
+        }
+
         NSWindow.allowsAutomaticWindowTabbing = false
         NSApp.setActivationPolicy(.accessory)
 
@@ -185,5 +190,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         store.start()
         statusBarController.showInitialUI()
+    }
+
+    private func hasAnotherRunningInstance() -> Bool {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+
+        if let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty {
+            let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            if apps.contains(where: { $0.processIdentifier != currentPID }) {
+                return true
+            }
+        }
+
+        guard let executablePath = Bundle.main.executableURL?.path else {
+            return false
+        }
+
+        return NSWorkspace.shared.runningApplications.contains(where: {
+            $0.processIdentifier != currentPID && $0.executableURL?.path == executablePath
+        })
     }
 }

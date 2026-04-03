@@ -36,25 +36,6 @@ enum SyncItemStatus: String, Codable, CaseIterable {
     case pending
     case error
     case disabled
-
-    var title: String {
-        switch self {
-        case .synced:
-            return "已同步"
-        case .uploading:
-            return "上传中"
-        case .downloading:
-            return "下载中"
-        case .conflict:
-            return "冲突"
-        case .pending:
-            return "等待同步"
-        case .error:
-            return "错误"
-        case .disabled:
-            return "已停用"
-        }
-    }
 }
 
 enum SyncEventAction: String, Codable, CaseIterable {
@@ -66,27 +47,6 @@ enum SyncEventAction: String, Codable, CaseIterable {
     case conflictDetected
     case conflictResolved
     case error
-
-    var title: String {
-        switch self {
-        case .added:
-            return "添加文件"
-        case .linked:
-            return "建立关联"
-        case .upload:
-            return "上传到云端"
-        case .download:
-            return "从云端应用"
-        case .deleted:
-            return "删除云端文件"
-        case .conflictDetected:
-            return "检测到冲突"
-        case .conflictResolved:
-            return "冲突已解决"
-        case .error:
-            return "同步错误"
-        }
-    }
 }
 
 enum SyncTargetKind: String, Codable, Hashable, CaseIterable {
@@ -334,19 +294,6 @@ enum AppSection: String, CaseIterable, Identifiable {
     case settings
 
     var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .files:
-            return "同步文件"
-        case .conflicts:
-            return "冲突处理"
-        case .history:
-            return "同步历史"
-        case .settings:
-            return "设置"
-        }
-    }
 }
 
 struct DiscoveryCandidate: Identifiable, Hashable {
@@ -371,19 +318,6 @@ enum SyncStatus {
     case syncing
     case warning(String)
     case error(String)
-
-    var menuTitle: String {
-        switch self {
-        case .idle:
-            return "状态：空闲"
-        case .syncing:
-            return "状态：同步中"
-        case .warning(let message):
-            return "状态：注意 - \(message)"
-        case .error(let message):
-            return "状态：错误 - \(message)"
-        }
-    }
 }
 
 struct AppSnapshot {
@@ -400,15 +334,6 @@ enum AddFileMode: String, CaseIterable, Identifiable {
     case linkExisting
 
     var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .upload:
-            return "上传新文件"
-        case .linkExisting:
-            return "关联已有云端文件"
-        }
-    }
 }
 
 struct AddFileDraft {

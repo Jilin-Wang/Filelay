@@ -214,7 +214,10 @@ final class AppStore: ObservableObject {
             }
             dismissAddSheet()
         } catch {
-            alertMessage = AlertMessage(title: L10n.text(.addFailed, settings.language), message: error.localizedDescription)
+            alertMessage = AlertMessage(
+                title: L10n.text(.addFailed, settings.language),
+                message: error.filelayLocalizedDescription(language: settings.language)
+            )
         }
     }
 
@@ -236,7 +239,10 @@ final class AppStore: ObservableObject {
             try coordinator.deleteCloudFile(cloudFileId: pendingDeletion.cloudFileId)
             self.pendingDeletion = nil
         } catch {
-            alertMessage = AlertMessage(title: L10n.text(.deleteCloudFile, settings.language), message: error.localizedDescription)
+            alertMessage = AlertMessage(
+                title: L10n.text(.deleteCloudFile, settings.language),
+                message: error.filelayLocalizedDescription(language: settings.language)
+            )
         }
     }
 

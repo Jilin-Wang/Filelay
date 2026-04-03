@@ -12,6 +12,25 @@ final class Storage {
     private let iCloudDriveBaseURL: URL
     private let allowsLegacyAppSupportLookup: Bool
 
+    var logger: StructuredLogger?
+
+    private func logError(_ message: String, path: String? = nil) {
+        guard let logger else { return }
+        logger.log(SyncLogEntry(
+            timestamp: Date().filelayString,
+            level: .error,
+            category: "storage",
+            message: message,
+            trigger: nil,
+            device: DeviceInfo(id: "storage", name: "Storage"),
+            itemID: nil,
+            cloudFileId: nil,
+            localPath: path,
+            cloudPath: nil,
+            metadata: [:]
+        ))
+    }
+
     struct DiscoveredCloudMetadata {
         var metadata: CloudFileMetadata
         var metadataURL: URL
@@ -39,9 +58,11 @@ final class Storage {
     }
 
     private var legacyAppSupportDir: URL {
-        fm
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent(Legacy.appSupportDirectoryName, isDirectory: true)
+        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            // 理论上不应该发生，但避免 .first! 导致的潜在崩溃。
+            return appSupportBaseURL.appendingPathComponent(Legacy.appSupportDirectoryName, isDirectory: true)
+        }
+        return base.appendingPathComponent(Legacy.appSupportDirectoryName, isDirectory: true)
     }
 
     private var legacySettingsURL: URL {
@@ -77,9 +98,9 @@ final class Storage {
         self.fm = fileManager
         self.defaults = userDefaults
         self.allowsLegacyAppSupportLookup = appSupportDir == nil
-        self.appSupportBaseURL = appSupportDir ?? fileManager
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Filelay", isDirectory: true)
+        let appSupportBaseDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
+        self.appSupportBaseURL = appSupportDir ?? appSupportBaseDirectory.appendingPathComponent("Filelay", isDirectory: true)
         self.iCloudDriveBaseURL = iCloudDriveRootURL ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs", isDirectory: true)
         try? fm.createDirectory(at: self.appSupportBaseURL, withIntermediateDirectories: true)
@@ -154,8 +175,12 @@ final class Storage {
 
     func saveSettings(_ settings: AppSettings) {
         _ = ensureManagedRoot(path: settings.managedRootPath)
-        guard let data = try? JSONEncoder.pretty.encode(settings) else { return }
-        try? data.writeAtomically(to: settingsURL)
+        do {
+            let data = try JSONEncoder.pretty.encode(settings)
+            try data.writeAtomically(to: settingsURL)
+        } catch {
+            logError("Failed to save settings: \(error.localizedDescription)", path: settingsURL.path)
+        }
     }
 
     func loadSyncItems() -> [SyncItem] {
@@ -180,8 +205,12 @@ final class Storage {
     }
 
     func saveSyncItems(_ items: [SyncItem]) {
-        guard let data = try? JSONEncoder.pretty.encode(items) else { return }
-        try? data.writeAtomically(to: syncItemsURL)
+        do {
+            let data = try JSONEncoder.pretty.encode(items)
+            try data.writeAtomically(to: syncItemsURL)
+        } catch {
+            logError("Failed to save sync items: \(error.localizedDescription)", path: syncItemsURL.path)
+        }
     }
 
     func ensureManagedRoot(path: String) -> URL {
@@ -344,12 +373,17 @@ final class Storage {
         let rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
         guard fm.fileExists(atPath: rootURL.path) else { return [] }
 
-        var discovered: [DiscoveredCloudMetadata] = []
-
         let candidateDirectories = [
             rootURL.appendingPathComponent(FilelayLayout.metadataDirectoryName, isDirectory: true),
             rootURL.appendingPathComponent(FilelayLayout.legacyMetadataDirectoryName, isDirectory: true)
         ]
+
+        // Resolve iCloud conflict copies before discovery
+        for directory in candidateDirectories where fm.fileExists(atPath: directory.path) {
+            resolveICloudConflictCopies(in: directory)
+        }
+
+        var discovered: [DiscoveredCloudMetadata] = []
 
         for directory in candidateDirectories where fm.fileExists(atPath: directory.path) {
             guard let enumerator = fm.enumerator(
@@ -363,6 +397,8 @@ final class Storage {
 
             for case let url as URL in enumerator {
                 guard url.pathExtension == "json" else { continue }
+                // Skip any remaining conflict copies
+                guard !isICloudConflictCopy(url) else { continue }
                 guard let data = try? Data(contentsOf: url),
                       let metadata = try? JSONDecoder().decode(CloudFileMetadata.self, from: data) else {
                     continue
@@ -381,6 +417,60 @@ final class Storage {
             let leftDate = lhs.metadata.cloudVersion?.updatedAt ?? ""
             let rightDate = rhs.metadata.cloudVersion?.updatedAt ?? ""
             return leftDate > rightDate
+        }
+    }
+
+    private func isICloudConflictCopy(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        guard name.hasSuffix(".json"), !name.hasPrefix(".") else { return false }
+        // iCloud creates files like "uuid (conflicted copy 2026-04-02).json"
+        let lowered = name.lowercased()
+        return lowered.contains("conflicted copy") || lowered.contains("conflict version")
+    }
+
+    /// Scans a metadata directory for iCloud conflict copy files and merges them
+    /// back into the primary metadata file, then removes the conflict copy.
+    private func resolveICloudConflictCopies(in directory: URL) {
+        guard let enumerator = fm.enumerator(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsPackageDescendants],
+            errorHandler: nil
+        ) else { return }
+
+        for case let url as URL in enumerator {
+            guard url.pathExtension == "json", isICloudConflictCopy(url) else { continue }
+
+            guard let conflictData = try? Data(contentsOf: url),
+                  let conflictMetadata = try? JSONDecoder().decode(CloudFileMetadata.self, from: conflictData) else {
+                // Can't parse conflict copy — remove it to prevent repeated processing
+                try? fm.removeItem(at: url)
+                logError("Removed unparseable iCloud conflict copy", path: url.path)
+                continue
+            }
+
+            let primaryURL = metadataURL(
+                for: URL(fileURLWithPath: conflictMetadata.cloudFilePath),
+                cloudFileId: conflictMetadata.cloudFileId
+            )
+
+            if let primaryData = try? Data(contentsOf: primaryURL),
+               let primaryMetadata = try? JSONDecoder().decode(CloudFileMetadata.self, from: primaryData) {
+                // Merge conflict into primary
+                let merged = merge(existing: normalizeMetadata(primaryMetadata), incoming: normalizeMetadata(conflictMetadata))
+                if let encoded = try? JSONEncoder.pretty.encode(normalizeMetadata(merged)) {
+                    try? encoded.writeAtomically(to: primaryURL)
+                }
+            } else {
+                // No primary exists — promote conflict copy to primary
+                let normalized = normalizeMetadata(conflictMetadata)
+                if let encoded = try? JSONEncoder.pretty.encode(normalized) {
+                    try? fm.createDirectory(at: primaryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try? encoded.writeAtomically(to: primaryURL)
+                }
+            }
+
+            try? fm.removeItem(at: url)
         }
     }
 
@@ -466,8 +556,12 @@ final class Storage {
     }
 
     private func saveCurrentDevice(_ device: DeviceInfo) {
-        guard let data = try? JSONEncoder.pretty.encode(device) else { return }
-        try? data.writeAtomically(to: deviceIdentityURL)
+        do {
+            let data = try JSONEncoder.pretty.encode(device)
+            try data.writeAtomically(to: deviceIdentityURL)
+        } catch {
+            logError("Failed to save device identity: \(error.localizedDescription)", path: deviceIdentityURL.path)
+        }
     }
 
     private func managedRootURL(for cloudFileURL: URL) -> URL? {
